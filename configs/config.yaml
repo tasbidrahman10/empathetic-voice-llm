@@ -3,7 +3,7 @@
 
 # ── Model ──────────────────────────────────────────────────────────────────────
 model:
-  model_id: "Qwen/Qwen2.5-Omni-7B-Instruct"
+  model_id: "Qwen/Qwen2.5-Omni-7B"
   hf_hub_checkpoint_repo: "efsm-checkpoints"   # your-username/efsm-checkpoints
 
 # ── QLoRA ──────────────────────────────────────────────────────────────────────
