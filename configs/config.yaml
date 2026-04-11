@@ -1,0 +1,75 @@
+# EFSM --- Empathetic Full-Duplex Speech Language Model
+# All hyperparameters and paths for the project
+
+# ── Model ──────────────────────────────────────────────────────────────────────
+model:
+  model_id: "Qwen/Qwen2.5-Omni-7B-Instruct"
+  hf_hub_checkpoint_repo: "efsm-checkpoints"   # your-username/efsm-checkpoints
+
+# ── QLoRA ──────────────────────────────────────────────────────────────────────
+qlora:
+  load_in_4bit: true
+  bnb_4bit_quant_type: "nf4"
+  bnb_4bit_compute_dtype: "bfloat16"
+  bnb_4bit_use_double_quant: true
+
+lora:
+  r: 16
+  lora_alpha: 32
+  lora_dropout: 0.05
+  target_modules:
+    - q_proj
+    - v_proj
+    - k_proj
+    - o_proj
+  bias: "none"
+
+# ── Training ───────────────────────────────────────────────────────────────────
+training:
+  output_dir: "checkpoints"
+  per_device_train_batch_size: 1
+  gradient_accumulation_steps: 16
+  learning_rate: 2.0e-4
+  num_train_epochs: 3
+  warmup_steps: 100
+  lr_scheduler_type: "cosine"
+  fp16: false
+  bf16: true
+  logging_steps: 10
+  eval_steps: 100
+  save_steps: 100
+  save_total_limit: 3
+  load_best_model_at_end: true
+  metric_for_best_model: "eval_loss"
+  max_grad_norm: 1.0
+  report_to: "wandb"
+  run_name: "efsm-qlora-run1"
+
+# ── Data ───────────────────────────────────────────────────────────────────────
+data:
+  dataset_id: "facebook/empathetic_dialogues"
+  train_path: "data/train.jsonl"
+  val_path: "data/val.jsonl"
+  test_path: "data/test.jsonl"
+  max_seq_len: 2048
+  train_split_ratio: 0.8
+  val_split_ratio: 0.1
+  test_split_ratio: 0.1
+
+# ── System Prompt ──────────────────────────────────────────────────────────────
+system_prompt: >
+  You are an empathetic voice therapist. Your role is to listen carefully
+  to how the person feels, acknowledge their emotions, and respond with
+  genuine warmth and understanding. Validate their feelings. Do not offer
+  unsolicited advice. Make them feel truly heard.
+
+# ── Weights & Biases ───────────────────────────────────────────────────────────
+wandb:
+  project: "efsm-cse465"
+  entity: null   # set to your W&B username if needed
+
+# ── Evaluation ─────────────────────────────────────────────────────────────────
+eval:
+  results_path: "results/evaluation_results.csv"
+  epitome_sample_size: 500
+  wer_sample_size: 50
