@@ -49,17 +49,14 @@ def load_model_for_training(config: dict):
 
     processor = Qwen2_5OmniProcessor.from_pretrained(model_id, trust_remote_code=True)
 
-    # Freeze non-Thinker components so only the LM backbone receives gradients.
-    frozen_keywords = ("audio_encoder", "talker", "token2wav")
-    frozen_count = 0
-    for name, param in model.named_parameters():
-        if any(kw in name for kw in frozen_keywords):
-            param.requires_grad = False
-            frozen_count += 1
-    print(f"Frozen {frozen_count} parameter tensors (audio_encoder / talker / token2wav).")
+    # Extract Thinker — it's a standard CausalLM with forward(input_ids, labels, ...).
+    # The full Qwen2_5OmniForConditionalGeneration forward() expects multimodal inputs
+    # and doesn't accept plain input_ids, so HuggingFace Trainer can't use it directly.
+    thinker = model.thinker
+    print("Thinker extracted. Applying QLoRA ...")
 
     # Required by PEFT before LoRA injection on a 4-bit quantised model.
-    model = prepare_model_for_kbit_training(model, use_gradient_checkpointing=True)
+    thinker = prepare_model_for_kbit_training(thinker, use_gradient_checkpointing=True)
 
     lora_config = LoraConfig(
         r=lora_cfg["r"],
@@ -71,7 +68,7 @@ def load_model_for_training(config: dict):
         # for multimodal models (same pattern used in Phase 1 verification).
     )
 
-    model = get_peft_model(model, lora_config)
-    model.print_trainable_parameters()
+    thinker = get_peft_model(thinker, lora_config)
+    thinker.print_trainable_parameters()
 
-    return model, processor
+    return thinker, processor
