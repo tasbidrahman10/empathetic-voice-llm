@@ -39,13 +39,16 @@ class EFSMDataset(Dataset):
     def __getitem__(self, idx: int) -> dict:
         messages = self.data[idx]
 
-        # Tokenize the full conversation (returns a list of int token IDs)
-        full_ids: list[int] = self.tokenizer.apply_chat_template(
+        # Use apply_chat_template(tokenize=False) + encode() instead of
+        # apply_chat_template(tokenize=True) because fast tokenizers can return
+        # a tokenizers.Encoding object rather than a plain list of ints, which
+        # breaks torch.tensor(). encode() always returns a plain Python list.
+        full_text = self.tokenizer.apply_chat_template(
             messages,
-            tokenize=True,
+            tokenize=False,
             add_generation_prompt=False,
         )
-        # Truncate to max_seq_len from the right
+        full_ids = self.tokenizer.encode(full_text, add_special_tokens=False)
         full_ids = full_ids[: self.max_seq_len]
         seq_len = len(full_ids)
 
@@ -54,30 +57,30 @@ class EFSMDataset(Dataset):
         labels = torch.full((seq_len,), -100, dtype=torch.long)
 
         # Unmask only the tokens that belong to assistant turns.
-        # Strategy: for each assistant turn at position i in the message list,
-        #   - tokenize prefix messages[:i] with add_generation_prompt=True
-        #     → this ends with the "<|im_start|>assistant\n" header tokens,
-        #       so len(prefix_ids) is the index of the first assistant content token
-        #   - tokenize messages[:i+1] with add_generation_prompt=False
-        #     → includes the assistant content + <|im_end|> terminator
-        #   - unmask tokens in [start, end) within the (possibly truncated) sequence
+        # For each assistant turn at position i in the message list:
+        #   - render prefix messages[:i] with add_generation_prompt=True
+        #     → ends with "<|im_start|>assistant\n", so len(prefix_ids) is
+        #       the index of the first assistant content token
+        #   - render messages[:i+1] with add_generation_prompt=False
+        #     → includes assistant content + <|im_end|> terminator
+        #   - unmask tokens in [start, end) clipped to truncated seq length
         for i, msg in enumerate(messages):
             if msg["role"] != "assistant":
                 continue
 
-            prefix_ids: list[int] = self.tokenizer.apply_chat_template(
+            prefix_text = self.tokenizer.apply_chat_template(
                 messages[:i],
-                tokenize=True,
+                tokenize=False,
                 add_generation_prompt=True,
             )
-            upto_ids: list[int] = self.tokenizer.apply_chat_template(
+            upto_text = self.tokenizer.apply_chat_template(
                 messages[: i + 1],
-                tokenize=True,
+                tokenize=False,
                 add_generation_prompt=False,
             )
 
-            start = len(prefix_ids)
-            end = min(len(upto_ids), seq_len)
+            start = len(self.tokenizer.encode(prefix_text, add_special_tokens=False))
+            end = min(len(self.tokenizer.encode(upto_text, add_special_tokens=False)), seq_len)
 
             if start < end:
                 labels[start:end] = input_ids[start:end]
