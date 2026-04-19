@@ -2,16 +2,17 @@
 qlora_setup.py — Load Qwen2.5-Omni Thinker in 4-bit NF4 and inject LoRA adapters.
 
 Strategy:
-  1. Load the full model across both T4 GPUs (device_map="auto") so it fits in VRAM.
-  2. Extract model.thinker, strip accelerate's device hooks, move to GPU 0 alone.
-  3. Delete the full model (frees audio encoder + other components from both GPUs).
-  4. Apply QLoRA to the Thinker on GPU 0 — no cross-device issues, no DataParallel.
+  - The training subprocess sets CUDA_VISIBLE_DEVICES=0, so only GPU 0 is
+    visible. Trainer sees 1 GPU and never uses DataParallel.
+  - The full model loads onto GPU 0 in 4-bit (~5-6 GB). After extracting
+    the Thinker, the rest (audio encoder etc.) is deleted to free ~1 GB.
+  - Gradient checkpointing keeps activation memory to ~200 MB so the
+    entire training run fits within the 14.56 GB T4 limit.
 """
 
 import gc
 
 import torch
-from accelerate.hooks import remove_hook_from_submodules
 from transformers import BitsAndBytesConfig
 from peft import LoraConfig, get_peft_model, prepare_model_for_kbit_training
 
@@ -19,7 +20,7 @@ from peft import LoraConfig, get_peft_model, prepare_model_for_kbit_training
 def load_model_for_training(config: dict):
     """
     Returns (thinker, processor) where thinker is a PEFT-wrapped CausalLM
-    sitting entirely on cuda:0, ready for HuggingFace Trainer.
+    on cuda:0, ready for HuggingFace Trainer.
     """
     from transformers import Qwen2_5OmniForConditionalGeneration, Qwen2_5OmniProcessor
 
@@ -40,9 +41,10 @@ def load_model_for_training(config: dict):
         bnb_4bit_use_double_quant=qlora_cfg["bnb_4bit_use_double_quant"],
     )
 
-    # Step 1 — Load full model across both GPUs so it fits in VRAM.
-    print(f"Loading {model_id} in 4-bit NF4 across both GPUs ...")
-    full_model = Qwen2_5OmniForConditionalGeneration.from_pretrained(
+    # CUDA_VISIBLE_DEVICES=0 is set in the notebook subprocess env, so
+    # device_map="auto" maps everything to the single visible GPU (cuda:0).
+    print(f"Loading {model_id} in 4-bit NF4 on GPU 0 ...")
+    model = Qwen2_5OmniForConditionalGeneration.from_pretrained(
         model_id,
         quantization_config=bnb_config,
         device_map="auto",
@@ -52,24 +54,21 @@ def load_model_for_training(config: dict):
 
     processor = Qwen2_5OmniProcessor.from_pretrained(model_id, trust_remote_code=True)
 
-    # Step 2 — Extract Thinker and remove accelerate's per-layer device hooks.
-    # These hooks are added by device_map="auto" to move tensors between GPUs.
-    # PEFT replaces the hooked Linear modules, breaking the hooks and causing
-    # cross-device bmm errors. We remove hooks first, then consolidate to GPU 0.
-    print("Extracting Thinker and consolidating to GPU 0 ...")
-    thinker = full_model.thinker
-    remove_hook_from_submodules(thinker)
-    thinker = thinker.to("cuda:0")
+    # Extract Thinker (standard CausalLM forward — accepts input_ids, labels).
+    thinker = model.thinker
+    print("Thinker extracted.")
 
-    # Step 3 — Delete the rest of the model (audio encoder etc.) to free VRAM.
-    # Thinker in 4-bit is ~3.5 GB; GPU 0 has 14.56 GB — plenty of room.
-    del full_model
+    # Delete the rest of the model (audio encoder etc.) to reclaim ~1 GB VRAM.
+    del model
     gc.collect()
     torch.cuda.empty_cache()
-    print(f"GPU 0 free after cleanup: "
-          f"{(torch.cuda.mem_get_info(0)[0] / 1024**3):.1f} GB")
 
-    # Step 4 — Apply QLoRA to the single-GPU Thinker.
+    free_gb = torch.cuda.mem_get_info(0)[0] / 1024 ** 3
+    print(f"GPU 0 free after cleanup: {free_gb:.1f} GB")
+
+    # Gradient checkpointing: recomputes activations instead of storing them.
+    # Cuts activation memory from ~8 GB to ~200 MB — essential for fitting
+    # training on a single T4.
     thinker = prepare_model_for_kbit_training(thinker, use_gradient_checkpointing=True)
 
     lora_config = LoraConfig(
@@ -82,13 +81,8 @@ def load_model_for_training(config: dict):
     )
 
     thinker = get_peft_model(thinker, lora_config)
+    # Re-register after PEFT wrapping so gradient checkpointing keeps working.
     thinker.enable_input_require_grads()
-
-    # Tell Trainer not to use DataParallel. BnB 4-bit models can't be replicated
-    # across GPUs via DataParallel — it breaks the quantized weight copy to GPU 1.
-    # These flags signal that the model already handles its own device placement.
-    thinker.is_parallelizable = True
-    thinker.model_parallel = True
-
     thinker.print_trainable_parameters()
+
     return thinker, processor
