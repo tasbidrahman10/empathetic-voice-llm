@@ -42,6 +42,9 @@ def load_model_for_training(config: dict):
         quantization_config=bnb_config,
         device_map="auto",
         trust_remote_code=True,
+        # Talker has a config bug (missing pad_token_id) on some transformers versions.
+        # We don't need it for text-only Thinker training.
+        enable_audio_output=False,
     )
 
     processor = Qwen2_5OmniProcessor.from_pretrained(model_id, trust_remote_code=True)
