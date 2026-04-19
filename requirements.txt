@@ -14,5 +14,6 @@ silero-vad>=4.0.0
 huggingface_hub>=0.22.0
 scipy>=1.12.0
 numpy>=1.26.0
+scikit-learn>=1.4.0
 tqdm
 sentencepiece

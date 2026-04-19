@@ -1,5 +1,5 @@
-# Processed data and raw datasets
-data/
+# Processed data and raw datasets (top-level only, not src/data/)
+/data/
 
 # Model checkpoints and weights
 checkpoints/

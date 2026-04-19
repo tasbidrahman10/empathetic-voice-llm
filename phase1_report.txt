@@ -1,0 +1,110 @@
+EFSM Phase 1 Report — Model Verification
+
+Course: CSE465 — Pattern Recognition and Neural Networks
+Student: Tasbid Al Rahman | ID: 2232225642
+Phase: 01
+
+========================================
+1. PROJECT SUMMARY
+======================================== 
+
+The Emotion-Aware Voice Therapist (EAVT) project has been revised. The original design --- a six-component
+pipeline connecting Whisper, WavLM, RoBERTa, a cross-attention fusion
+module, LLaMA, and StyleTTS2 --- has been replaced with a fundamentally
+different architectural paradigm: one unified end-to-end
+speech-to-speech language model.
+
+The new project, titled the Empathetic Full-Duplex Speech Language Model
+(EFSM), fine-tunes Qwen2.5-Omni-7B-Instruct --- a state-of-the-art
+unified multimodal model from Alibaba\'s Qwen team --- to engage in
+empathetic therapeutic conversation in full-duplex mode. The user
+speaks; the model listens and responds in speech, with both processes
+capable of running simultaneously.
+
+
+| Item       | Detail                                                                 |
+|------------|------------------------------------------------------------------------|
+| Project    | Empathetic Full-Duplex Speech Language Model (EFSM)                   |
+| Goal       | Fine-tune Qwen2.5-Omni-7B on EmpatheticDialogues for empathetic       |
+|            | therapeutic voice conversation                                         |
+| Approach   | One unified model: audio in -> empathetic speech out                  |
+|            | (no pipeline, no text bottleneck)                                      |
+| Compute    | Kaggle T4 x2 GPU (free tier)                                           |
+| Repository | github.com/tasbidrahman10/empathetic-voice-llm                        |
+
+========================================
+2. ARCHITECTURE
+========================================
+
+| Component                          | Role                                  | Fine-tuned?          |
+|------------------------------------|---------------------------------------|----------------------|
+| Audio Encoder (Whisper-large-v3)   | Raw audio -> audio tokens             | Frozen               |
+| Thinker (Qwen2.5-7B backbone)      | Audio tokens -> empathetic text       | Yes — QLoRA (Phase 3)|
+| Talker (dual-track decoder)        | Text tokens -> speech tokens          | Frozen               |
+| Token2Wav (BigVGAN)                | Speech tokens -> waveform             | Frozen               |
+
+========================================
+3. PHASE 1 OBJECTIVE
+========================================
+
+Confirm Qwen2.5-Omni-7B loads and runs inference on Kaggle T4 GPU before any fine-tuning begins.
+
+========================================
+4. WHAT WAS DONE
+========================================
+
+| Task                                                              | Status |
+|-------------------------------------------------------------------|--------|
+| GitHub repository created and pushed                             | Done   |
+| Project directory scaffold, config, requirements created         | Done   |
+| Kaggle notebook 00_verify_model.ipynb written and executed       | Done   |
+| HuggingFace token and W&B API key configured in Kaggle Secrets   | Done   |
+| Model downloaded (~22 GB) and loaded in 4-bit NF4 quantisation   | Done   |
+| Parameter count verified                                          | Done   |
+| VRAM usage measured on both T4 GPUs                              | Done   |
+| Text-mode empathetic inference run and verified                   | Done   |
+
+
+========================================
+5. VERIFIED RESULTS
+========================================
+
+| Metric                              | Result                                          |
+|-------------------------------------|-------------------------------------------------|
+| Total parameters                    | 5.02 B                                          |
+| Trainable parameters (pre-LoRA)     | 1098.26 M (21.90%)                              |
+| VRAM — GPU 0 (Tesla T4)             | 2.03 GB allocated / 15.64 GB total              |
+| VRAM — GPU 1 (Tesla T4)             | 4.25 GB allocated / 15.64 GB total              |
+| Text inference                      | Empathetic response generated successfully      |
+| Speech output (Talker)              | Deferred — transformers bug; resolved in Phase 3|
+
+Sample Inference:
+- Input:  "I feel so overwhelmed lately. Everything at uni feels like too much and I don't know how to cope."
+- Output: Empathetic therapist-style reply — acknowledges feelings, validates emotion, no unsolicited advice. Consistent with fine-tuning objective.
+
+========================================
+6. NEXT — PHASE 2: DATASET PREPARATION (April 15-17)
+========================================
+
+| Task          | Detail                                                                        |
+|---------------|-------------------------------------------------------------------------------|
+| Dataset       | facebook/empathetic_dialogues — 25,000 conversations, 32 emotion categories  |
+| Script        | src/data/preprocess_empathetic.py — groups utterances by conversation ID,    |
+|               | formats as ChatML messages                                                    |
+| Output        | data/train.jsonl (~17,000 rows), val.jsonl, test.jsonl (80/10/10 split,      |
+|               | stratified by emotion)                                                        |
+| Label masking | Loss computed on assistant turns only; system/user tokens masked with -100   |
+| Notebook      | notebooks/01_preprocess.ipynb — runs on Kaggle CPU, no GPU needed            |
+
+========================================
+7. OVERALL PROJECT TIMELINE
+========================================
+
+| Phase | Description                                    | Status   |
+|-------|------------------------------------------------|----------|
+| 0     | Setup — repo, config, requirements             | Complete |
+| 1     | Model verification on Kaggle T4                | Complete |
+| 2     | Dataset preparation — EmpatheticDialogues      | Next     |
+| 3     | QLoRA fine-tuning — Thinker on dataset         | Upcoming |
+| 4     | Evaluation — EPITOME scores, base vs fine-tuned| Upcoming |
+| 5     | Full-duplex Gradio demo                        | Upcoming |
