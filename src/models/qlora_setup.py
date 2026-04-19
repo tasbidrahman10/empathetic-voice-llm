@@ -83,6 +83,12 @@ def load_model_for_training(config: dict):
 
     thinker = get_peft_model(thinker, lora_config)
     thinker.enable_input_require_grads()
-    thinker.print_trainable_parameters()
 
+    # Tell Trainer not to use DataParallel. BnB 4-bit models can't be replicated
+    # across GPUs via DataParallel — it breaks the quantized weight copy to GPU 1.
+    # These flags signal that the model already handles its own device placement.
+    thinker.is_parallelizable = True
+    thinker.model_parallel = True
+
+    thinker.print_trainable_parameters()
     return thinker, processor
