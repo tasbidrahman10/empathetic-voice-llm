@@ -5,8 +5,15 @@ Usage:
     python src/training/train.py --config configs/config.yaml
 """
 
-import argparse
 import os
+
+# Must be set before ANY torch/CUDA import — restricts CUDA to GPU 0 only so
+# Trainer sees device_count()=1 and never wraps the model in DataParallel.
+# BnB 4-bit models break under DataParallel (weights stay on cuda:0 while
+# DataParallel copies inputs to cuda:1).
+os.environ["CUDA_VISIBLE_DEVICES"] = "0"
+
+import argparse
 import sys
 
 import yaml
