@@ -107,7 +107,7 @@ def main() -> None:
     system_prompt = cfg["system_prompt"].strip()
 
     print("Loading facebook/empathetic_dialogues (train split) ...")
-    ds = load_dataset(data_cfg["dataset_id"], split="train")
+    ds = load_dataset(data_cfg["dataset_id"], split="train", trust_remote_code=True)
     print(f"Raw utterance rows: {len(ds)}")
 
     conversations = build_conversations(ds, system_prompt)
