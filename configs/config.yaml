@@ -51,7 +51,7 @@ data:
   train_path: "data/train.jsonl"
   val_path: "data/val.jsonl"
   test_path: "data/test.jsonl"
-  max_seq_len: 2048
+  max_seq_len: 1024
   train_split_ratio: 0.8
   val_split_ratio: 0.1
   test_split_ratio: 0.1

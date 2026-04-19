@@ -81,6 +81,8 @@ def main():
         run_name=train_cfg["run_name"],
         dataloader_num_workers=0,
         remove_unused_columns=False,
+        gradient_checkpointing=True,
+        gradient_checkpointing_kwargs={"use_reentrant": False},
     )
 
     data_collator = DataCollatorForSeq2Seq(
