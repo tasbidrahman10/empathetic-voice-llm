@@ -75,6 +75,9 @@ def load_model_for_training(config: dict):
     )
 
     thinker = get_peft_model(thinker, lora_config)
+    # Re-enable after PEFT wrapping — PEFT replaces modules and can silently
+    # break the input-requires-grad hook that gradient checkpointing depends on.
+    thinker.enable_input_require_grads()
     thinker.print_trainable_parameters()
 
     return thinker, processor
