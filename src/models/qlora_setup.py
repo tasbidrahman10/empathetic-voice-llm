@@ -40,10 +40,11 @@ def load_model_for_training(config: dict):
     model = Qwen2_5OmniForConditionalGeneration.from_pretrained(
         model_id,
         quantization_config=bnb_config,
-        device_map="auto",
+        # Force all layers onto GPU 0 — "auto" splits across T4 x2 which breaks
+        # cross-device matmuls when we extract the Thinker submodule.
+        # 4-bit Thinker (~3.5 GB) fits comfortably on one T4 16 GB.
+        device_map={"": 0},
         trust_remote_code=True,
-        # Talker has a config bug (missing pad_token_id) on some transformers versions.
-        # We don't need it for text-only Thinker training.
         enable_audio_output=False,
     )
 
