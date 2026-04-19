@@ -1,25 +1,25 @@
 """
 qlora_setup.py — Load Qwen2.5-Omni Thinker in 4-bit NF4 and inject LoRA adapters.
 
-Only the Thinker (LM backbone) is trained. Audio encoder, Talker, and Token2Wav
-parameters are frozen before LoRA injection.
+Strategy:
+  1. Load the full model across both T4 GPUs (device_map="auto") so it fits in VRAM.
+  2. Extract model.thinker, strip accelerate's device hooks, move to GPU 0 alone.
+  3. Delete the full model (frees audio encoder + other components from both GPUs).
+  4. Apply QLoRA to the Thinker on GPU 0 — no cross-device issues, no DataParallel.
 """
 
+import gc
+
 import torch
+from accelerate.hooks import remove_hook_from_submodules
 from transformers import BitsAndBytesConfig
 from peft import LoraConfig, get_peft_model, prepare_model_for_kbit_training
 
 
 def load_model_for_training(config: dict):
     """
-    Load Qwen2.5-Omni in 4-bit NF4, freeze non-Thinker components, inject LoRA.
-
-    Args:
-        config: Parsed configs/config.yaml as a dict.
-
-    Returns:
-        (model, processor) — PEFT-wrapped model ready for Trainer, and the
-        Qwen2_5OmniProcessor used to tokenize inputs.
+    Returns (thinker, processor) where thinker is a PEFT-wrapped CausalLM
+    sitting entirely on cuda:0, ready for HuggingFace Trainer.
     """
     from transformers import Qwen2_5OmniForConditionalGeneration, Qwen2_5OmniProcessor
 
@@ -27,7 +27,11 @@ def load_model_for_training(config: dict):
     qlora_cfg = config["qlora"]
     lora_cfg = config["lora"]
 
-    compute_dtype = torch.bfloat16 if qlora_cfg["bnb_4bit_compute_dtype"] == "bfloat16" else torch.float16
+    compute_dtype = (
+        torch.bfloat16
+        if qlora_cfg["bnb_4bit_compute_dtype"] == "bfloat16"
+        else torch.float16
+    )
 
     bnb_config = BitsAndBytesConfig(
         load_in_4bit=qlora_cfg["load_in_4bit"],
@@ -36,12 +40,11 @@ def load_model_for_training(config: dict):
         bnb_4bit_use_double_quant=qlora_cfg["bnb_4bit_use_double_quant"],
     )
 
-    print(f"Loading {model_id} in 4-bit NF4 ...")
-    model = Qwen2_5OmniForConditionalGeneration.from_pretrained(
+    # Step 1 — Load full model across both GPUs so it fits in VRAM.
+    print(f"Loading {model_id} in 4-bit NF4 across both GPUs ...")
+    full_model = Qwen2_5OmniForConditionalGeneration.from_pretrained(
         model_id,
         quantization_config=bnb_config,
-        # "auto" spreads layers across both T4 GPUs so the model fits in VRAM.
-        # Trainer DataParallel is suppressed below via is_parallelizable flag.
         device_map="auto",
         trust_remote_code=True,
         enable_audio_output=False,
@@ -49,19 +52,24 @@ def load_model_for_training(config: dict):
 
     processor = Qwen2_5OmniProcessor.from_pretrained(model_id, trust_remote_code=True)
 
-    # Extract Thinker — it's a standard CausalLM with forward(input_ids, labels, ...).
-    # The full Qwen2_5OmniForConditionalGeneration forward() expects multimodal inputs
-    # and doesn't accept plain input_ids, so HuggingFace Trainer can't use it directly.
-    thinker = model.thinker
-    print("Thinker extracted. Applying QLoRA ...")
+    # Step 2 — Extract Thinker and remove accelerate's per-layer device hooks.
+    # These hooks are added by device_map="auto" to move tensors between GPUs.
+    # PEFT replaces the hooked Linear modules, breaking the hooks and causing
+    # cross-device bmm errors. We remove hooks first, then consolidate to GPU 0.
+    print("Extracting Thinker and consolidating to GPU 0 ...")
+    thinker = full_model.thinker
+    remove_hook_from_submodules(thinker)
+    thinker = thinker.to("cuda:0")
 
-    # Suppress Trainer's DataParallel wrapping. With device_map="auto" the model is
-    # already spread across GPUs by accelerate hooks; DataParallel on top causes
-    # cross-device matmul errors. These flags tell Trainer to leave the model alone.
-    thinker.is_parallelizable = True
-    thinker.model_parallel = True
+    # Step 3 — Delete the rest of the model (audio encoder etc.) to free VRAM.
+    # Thinker in 4-bit is ~3.5 GB; GPU 0 has 14.56 GB — plenty of room.
+    del full_model
+    gc.collect()
+    torch.cuda.empty_cache()
+    print(f"GPU 0 free after cleanup: "
+          f"{(torch.cuda.mem_get_info(0)[0] / 1024**3):.1f} GB")
 
-    # Required by PEFT before LoRA injection on a 4-bit quantised model.
+    # Step 4 — Apply QLoRA to the single-GPU Thinker.
     thinker = prepare_model_for_kbit_training(thinker, use_gradient_checkpointing=True)
 
     lora_config = LoraConfig(
@@ -70,13 +78,10 @@ def load_model_for_training(config: dict):
         target_modules=lora_cfg["target_modules"],
         lora_dropout=lora_cfg["lora_dropout"],
         bias=lora_cfg["bias"],
-        # task_type intentionally omitted — TaskType enum raises NotImplementedError
-        # for multimodal models (same pattern used in Phase 1 verification).
+        # task_type omitted — avoids NotImplementedError on multimodal model classes.
     )
 
     thinker = get_peft_model(thinker, lora_config)
-    # Re-enable after PEFT wrapping — PEFT replaces modules and can silently
-    # break the input-requires-grad hook that gradient checkpointing depends on.
     thinker.enable_input_require_grads()
     thinker.print_trainable_parameters()
 
