@@ -40,10 +40,9 @@ def load_model_for_training(config: dict):
     model = Qwen2_5OmniForConditionalGeneration.from_pretrained(
         model_id,
         quantization_config=bnb_config,
-        # Force all layers onto GPU 0 — "auto" splits across T4 x2 which breaks
-        # cross-device matmuls when we extract the Thinker submodule.
-        # 4-bit Thinker (~3.5 GB) fits comfortably on one T4 16 GB.
-        device_map={"": 0},
+        # "auto" spreads layers across both T4 GPUs so the model fits in VRAM.
+        # Trainer DataParallel is suppressed below via is_parallelizable flag.
+        device_map="auto",
         trust_remote_code=True,
         enable_audio_output=False,
     )
@@ -55,6 +54,12 @@ def load_model_for_training(config: dict):
     # and doesn't accept plain input_ids, so HuggingFace Trainer can't use it directly.
     thinker = model.thinker
     print("Thinker extracted. Applying QLoRA ...")
+
+    # Suppress Trainer's DataParallel wrapping. With device_map="auto" the model is
+    # already spread across GPUs by accelerate hooks; DataParallel on top causes
+    # cross-device matmul errors. These flags tell Trainer to leave the model alone.
+    thinker.is_parallelizable = True
+    thinker.model_parallel = True
 
     # Required by PEFT before LoRA injection on a 4-bit quantised model.
     thinker = prepare_model_for_kbit_training(thinker, use_gradient_checkpointing=True)
