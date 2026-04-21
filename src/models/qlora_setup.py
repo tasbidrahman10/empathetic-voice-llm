@@ -43,6 +43,9 @@ def load_model_for_training(config: dict):
 
     # CUDA_VISIBLE_DEVICES=0 is set in the notebook subprocess env, so
     # device_map="auto" maps everything to the single visible GPU (cuda:0).
+    total_gb = torch.cuda.get_device_properties(0).total_memory / 1024 ** 3
+    print(f"GPU 0 total VRAM: {total_gb:.1f} GB")
+    print(f"Compute dtype: {compute_dtype}  (fp16 = correct for T4; bf16 would silently upcast to fp32)")
     print(f"Loading {model_id} in 4-bit NF4 on GPU 0 ...")
     model = Qwen2_5OmniForConditionalGeneration.from_pretrained(
         model_id,
