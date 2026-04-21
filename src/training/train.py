@@ -42,8 +42,7 @@ def main():
     from src.models.qlora_setup import load_model_for_training
     from src.data.dataset import EFSMDataset
 
-    model, processor = load_model_for_training(config)
-    tokenizer = processor.tokenizer
+    model, tokenizer = load_model_for_training(config)
 
     # ── Datasets ─────────────────────────────────────────────────────────────
     data_cfg = config["data"]

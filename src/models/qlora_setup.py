@@ -1,37 +1,28 @@
 """
-qlora_setup.py — Load Qwen2.5-Omni Thinker in 4-bit NF4 and inject LoRA adapters.
+qlora_setup.py — Load Qwen2.5-7B-Instruct in 4-bit NF4 and inject LoRA adapters.
 
-Strategy:
-  - The training subprocess sets CUDA_VISIBLE_DEVICES=0, so only GPU 0 is
-    visible. Trainer sees 1 GPU and never uses DataParallel.
-  - The full model loads onto GPU 0 in 4-bit (~5-6 GB). After extracting
-    the Thinker, the rest (audio encoder etc.) is deleted to free ~1 GB.
-  - Gradient checkpointing keeps activation memory to ~200 MB so the
-    entire training run fits within the 14.56 GB T4 limit.
+We load Qwen2.5-7B-Instruct directly (not via Qwen2.5-Omni) because:
+  - Qwen2.5-7B is architecturally identical to the Thinker inside Qwen2.5-Omni.
+  - Loading the full Omni model (9-10B with audio encoder + Talker) exhausts
+    the T4's 14.56 GB even in 4-bit due to loading overhead.
+  - For text-based empathy fine-tuning, the base LLM weights are what matter.
 """
 
-import gc
-
 import torch
-from transformers import BitsAndBytesConfig
+from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
 from peft import LoraConfig, get_peft_model, prepare_model_for_kbit_training
 
 
 def load_model_for_training(config: dict):
-    """
-    Returns (thinker, processor) where thinker is a PEFT-wrapped CausalLM
-    on cuda:0, ready for HuggingFace Trainer.
-    """
-    from transformers import Qwen2_5OmniForConditionalGeneration, Qwen2_5OmniProcessor
-
+    """Returns (model, tokenizer) where model is PEFT-wrapped and ready for Trainer."""
     model_id = config["model"]["model_id"]
     qlora_cfg = config["qlora"]
     lora_cfg = config["lora"]
 
     compute_dtype = (
-        torch.bfloat16
-        if qlora_cfg["bnb_4bit_compute_dtype"] == "bfloat16"
-        else torch.float16
+        torch.float16
+        if qlora_cfg["bnb_4bit_compute_dtype"] == "float16"
+        else torch.bfloat16
     )
 
     bnb_config = BitsAndBytesConfig(
@@ -41,38 +32,25 @@ def load_model_for_training(config: dict):
         bnb_4bit_use_double_quant=qlora_cfg["bnb_4bit_use_double_quant"],
     )
 
-    # CUDA_VISIBLE_DEVICES=0 is set in the notebook subprocess env, so
-    # device_map="auto" maps everything to the single visible GPU (cuda:0).
     total_gb = torch.cuda.get_device_properties(0).total_memory / 1024 ** 3
-    print(f"GPU 0 total VRAM: {total_gb:.1f} GB")
-    print(f"Compute dtype: {compute_dtype}  (fp16 = correct for T4; bf16 would silently upcast to fp32)")
-    print(f"Loading {model_id} in 4-bit NF4 on GPU 0 ...")
-    model = Qwen2_5OmniForConditionalGeneration.from_pretrained(
+    print(f"GPU 0 total VRAM: {total_gb:.1f} GB  |  compute_dtype: {compute_dtype}")
+    print(f"Loading {model_id} in 4-bit NF4 ...")
+
+    model = AutoModelForCausalLM.from_pretrained(
         model_id,
         quantization_config=bnb_config,
         device_map="auto",
         trust_remote_code=True,
-        enable_audio_output=False,
     )
 
-    processor = Qwen2_5OmniProcessor.from_pretrained(model_id, trust_remote_code=True)
-
-    # Extract Thinker (standard CausalLM forward — accepts input_ids, labels).
-    thinker = model.thinker
-    print("Thinker extracted.")
-
-    # Delete the rest of the model (audio encoder etc.) to reclaim ~1 GB VRAM.
-    del model
-    gc.collect()
-    torch.cuda.empty_cache()
+    tokenizer = AutoTokenizer.from_pretrained(model_id, trust_remote_code=True)
+    if tokenizer.pad_token is None:
+        tokenizer.pad_token = tokenizer.eos_token
 
     free_gb = torch.cuda.mem_get_info(0)[0] / 1024 ** 3
-    print(f"GPU 0 free after cleanup: {free_gb:.1f} GB")
+    print(f"GPU 0 free after model load: {free_gb:.1f} GB")
 
-    # Gradient checkpointing: recomputes activations instead of storing them.
-    # Cuts activation memory from ~8 GB to ~200 MB — essential for fitting
-    # training on a single T4.
-    thinker = prepare_model_for_kbit_training(thinker, use_gradient_checkpointing=True)
+    model = prepare_model_for_kbit_training(model, use_gradient_checkpointing=True)
 
     lora_config = LoraConfig(
         r=lora_cfg["r"],
@@ -80,12 +58,10 @@ def load_model_for_training(config: dict):
         target_modules=lora_cfg["target_modules"],
         lora_dropout=lora_cfg["lora_dropout"],
         bias=lora_cfg["bias"],
-        # task_type omitted — avoids NotImplementedError on multimodal model classes.
     )
 
-    thinker = get_peft_model(thinker, lora_config)
-    # Re-register after PEFT wrapping so gradient checkpointing keeps working.
-    thinker.enable_input_require_grads()
-    thinker.print_trainable_parameters()
+    model = get_peft_model(model, lora_config)
+    model.enable_input_require_grads()
+    model.print_trainable_parameters()
 
-    return thinker, processor
+    return model, tokenizer
