@@ -22,6 +22,7 @@ import yaml
 def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", default="configs/config.yaml")
+    parser.add_argument("--resume_from_checkpoint", default=None)
     return parser.parse_args()
 
 
@@ -100,9 +101,34 @@ def main():
         data_collator=data_collator,
     )
 
+    # ── Callback: upload each checkpoint to HF Hub so Colab disconnects don't lose progress ──
+    hf_token = os.environ.get("HF_TOKEN")
+    if hf_token:
+        from transformers import TrainerCallback
+        from huggingface_hub import HfApi
+
+        repo_id = config["model"]["hf_hub_checkpoint_repo"]
+        _api = HfApi()
+
+        class HubCheckpointCallback(TrainerCallback):
+            def on_save(self, args, state, control, **kwargs):
+                ckpt = os.path.join(args.output_dir, f"checkpoint-{state.global_step}")
+                if os.path.isdir(ckpt):
+                    _api.upload_folder(
+                        folder_path=ckpt,
+                        repo_id=repo_id,
+                        path_in_repo=f"checkpoint-{state.global_step}",
+                        repo_type="model",
+                        token=hf_token,
+                        commit_message=f"checkpoint-{state.global_step}",
+                    )
+                    print(f"Checkpoint {state.global_step} uploaded to HF Hub.")
+
+        trainer.add_callback(HubCheckpointCallback())
+
     # ── Train ────────────────────────────────────────────────────────────────
     print("Starting QLoRA fine-tuning ...")
-    trainer.train()
+    trainer.train(resume_from_checkpoint=args.resume_from_checkpoint)
 
     # ── Save LoRA adapter ────────────────────────────────────────────────────
     adapter_dir = os.path.join(train_cfg["output_dir"], "final-adapter")
