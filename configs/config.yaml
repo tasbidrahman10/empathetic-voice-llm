@@ -4,7 +4,7 @@
 # ── Model ──────────────────────────────────────────────────────────────────────
 model:
   model_id: "Qwen/Qwen2.5-7B-Instruct"
-  hf_hub_checkpoint_repo: "tasbid001/efsm-checkpoints"
+  hf_hub_checkpoint_repo: "tasbid001/efsm-checkpoints-fixed"
 
 # ── QLoRA ──────────────────────────────────────────────────────────────────────
 qlora:
@@ -43,7 +43,7 @@ training:
   metric_for_best_model: "eval_loss"
   max_grad_norm: 1.0
   report_to: "wandb"
-  run_name: "efsm-qlora-run1"
+  run_name: "efsm-qlora-run2-fixed-data"
 
 # ── Data ───────────────────────────────────────────────────────────────────────
 data:

@@ -116,7 +116,7 @@ See [configs/config.yaml](configs/config.yaml) for full settings. Key values:
 
 | Service | Purpose | Setup |
 |---------|---------|-------|
-| HuggingFace Hub | Checkpoint storage (`efsm-checkpoints`) | huggingface.co/settings/tokens |
+| HuggingFace Hub | Checkpoint storage (`efsm-checkpoints-fixed`) | huggingface.co/settings/tokens |
 | Weights & Biases | Training metrics (`efsm-cse465`) | wandb.ai |
 | Kaggle | GPU compute (T4 x2) | kaggle.com |
 | Anthropic API | EPITOME scoring in Phase 4 | console.anthropic.com |
