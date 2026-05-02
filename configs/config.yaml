@@ -30,7 +30,7 @@ training:
   per_device_train_batch_size: 1
   gradient_accumulation_steps: 16
   learning_rate: 2.0e-4
-  num_train_epochs: 3
+  num_train_epochs: 1
   warmup_steps: 100
   lr_scheduler_type: "cosine"
   fp16: true
@@ -43,7 +43,7 @@ training:
   metric_for_best_model: "eval_loss"
   max_grad_norm: 1.0
   report_to: "wandb"
-  run_name: "efsm-qlora-run2-fixed-data"
+  run_name: "efsm-qlora-run2-fixed-data-1epoch"
 
 # ── Data ───────────────────────────────────────────────────────────────────────
 data:
