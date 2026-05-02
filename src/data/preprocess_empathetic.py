@@ -25,6 +25,17 @@ def load_config(config_path: str) -> dict:
         return yaml.safe_load(f)
 
 
+def clean_text(text: str) -> str:
+    """Normalize EmpatheticDialogues placeholders without changing meaning."""
+    return text.replace("_comma_", ",").strip()
+
+
+def strip_emotion_tag(text: str) -> str:
+    if text.startswith("[emotion:") and "] " in text:
+        return text.split("] ", 1)[1].strip()
+    return text.strip()
+
+
 def build_conversations(dataset_split, system_prompt: str) -> list[dict]:
     """Group utterances by conv_id and build ChatML message lists.
 
@@ -34,11 +45,13 @@ def build_conversations(dataset_split, system_prompt: str) -> list[dict]:
     """
     conv_utterances: dict[str, list] = defaultdict(list)
     conv_emotion: dict[str, str] = {}
+    conv_prompt: dict[str, str] = {}
 
     for row in dataset_split:
         cid = row["conv_id"]
         conv_utterances[cid].append(row)
         conv_emotion[cid] = row["context"]
+        conv_prompt[cid] = clean_text(row.get("prompt", ""))
 
     conversations = []
     for cid, utterances in conv_utterances.items():
@@ -47,7 +60,7 @@ def build_conversations(dataset_split, system_prompt: str) -> list[dict]:
 
         messages = [{"role": "system", "content": system_prompt}]
         for i, utt in enumerate(utterances):
-            text = utt["prompt"].strip()
+            text = clean_text(utt["utterance"])
             if not text:
                 continue
             if i % 2 == 0:
@@ -68,10 +81,40 @@ def build_conversations(dataset_split, system_prompt: str) -> list[dict]:
             conversations.append({
                 "conv_id": cid,
                 "emotion": emotion,
+                "prompt": conv_prompt.get(cid, ""),
                 "messages": messages,
             })
 
     return conversations
+
+
+def validate_conversations(conversations: list[dict], max_copy_rate: float = 0.05) -> None:
+    """Catch accidental target leakage before expensive fine-tuning starts."""
+    total_assistant_turns = 0
+    copied_from_previous_user = 0
+
+    for conv in conversations:
+        previous_user = None
+        for msg in conv["messages"]:
+            role = msg["role"]
+            content = msg["content"].strip()
+            if role == "user":
+                previous_user = strip_emotion_tag(content)
+            elif role == "assistant":
+                total_assistant_turns += 1
+                if previous_user and content == previous_user:
+                    copied_from_previous_user += 1
+
+    copy_rate = copied_from_previous_user / total_assistant_turns if total_assistant_turns else 0.0
+    print(
+        f"Leakage check: {copied_from_previous_user}/{total_assistant_turns} "
+        f"assistant turns exactly copy the previous user turn ({copy_rate:.2%})"
+    )
+    if copy_rate > max_copy_rate:
+        raise ValueError(
+            "Preprocessing failed leakage check: too many assistant turns are "
+            "exact copies of the preceding user turn."
+        )
 
 
 def save_jsonl(conversations: list[dict], path: str) -> None:
@@ -112,6 +155,7 @@ def main() -> None:
 
     conversations = build_conversations(ds, system_prompt)
     print(f"Total conversations built: {len(conversations)}")
+    validate_conversations(conversations)
 
     emotions = [c["emotion"] for c in conversations]
     total_test_frac = data_cfg["val_split_ratio"] + data_cfg["test_split_ratio"]
