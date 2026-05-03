@@ -16,7 +16,7 @@ from pathlib import Path
 import torch
 import yaml
 from peft import PeftModel
-from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
+from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
 
 
 DEFAULT_PROMPTS = [
@@ -88,6 +88,33 @@ def load_config(config_path: str) -> dict:
         return yaml.safe_load(f)
 
 
+def build_qwen_device_map(model_id: str, hf_token: str | None):
+    """Explicitly split Qwen layers across two GPUs.
+
+    Kaggle sometimes exposes two T4s but Accelerate still packs this 4-bit model
+    onto cuda:0. This map makes cuda:1 carry the later transformer blocks and
+    output head so generation has breathing room.
+    """
+    if not torch.cuda.is_available() or torch.cuda.device_count() < 2:
+        return "auto", None
+
+    config = AutoConfig.from_pretrained(model_id, trust_remote_code=True, token=hf_token)
+    num_layers = int(config.num_hidden_layers)
+    split = num_layers // 2
+
+    device_map = {
+        "model.embed_tokens": 0,
+        "model.norm": 1,
+        "lm_head": 1,
+    }
+    for layer_idx in range(num_layers):
+        device_map[f"model.layers.{layer_idx}"] = 0 if layer_idx < split else 1
+
+    max_memory = {0: "13GiB", 1: "13GiB", "cpu": "48GiB"}
+    print(f"Using explicit two-GPU map: layers 0-{split - 1} on cuda:0, {split}-{num_layers - 1} on cuda:1")
+    return device_map, max_memory
+
+
 def load_model_and_tokenizer(model_id: str, adapter_repo: str | None, hf_token: str | None):
     bnb_config = BitsAndBytesConfig(
         load_in_4bit=True,
@@ -100,14 +127,8 @@ def load_model_and_tokenizer(model_id: str, adapter_repo: str | None, hf_token: 
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
 
-    if torch.cuda.is_available():
-        print(f"Visible CUDA devices: {torch.cuda.device_count()}")
-        max_memory = {i: "12GiB" for i in range(torch.cuda.device_count())}
-        max_memory["cpu"] = "48GiB"
-        device_map = "balanced_low_0" if torch.cuda.device_count() > 1 else "auto"
-    else:
-        max_memory = None
-        device_map = "auto"
+    print(f"Visible CUDA devices: {torch.cuda.device_count() if torch.cuda.is_available() else 0}")
+    device_map, max_memory = build_qwen_device_map(model_id, hf_token)
 
     model = AutoModelForCausalLM.from_pretrained(
         model_id,
