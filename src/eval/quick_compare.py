@@ -100,10 +100,20 @@ def load_model_and_tokenizer(model_id: str, adapter_repo: str | None, hf_token: 
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
 
+    if torch.cuda.is_available():
+        print(f"Visible CUDA devices: {torch.cuda.device_count()}")
+        max_memory = {i: "12GiB" for i in range(torch.cuda.device_count())}
+        max_memory["cpu"] = "48GiB"
+        device_map = "balanced_low_0" if torch.cuda.device_count() > 1 else "auto"
+    else:
+        max_memory = None
+        device_map = "auto"
+
     model = AutoModelForCausalLM.from_pretrained(
         model_id,
         quantization_config=bnb_config,
-        device_map="auto",
+        device_map=device_map,
+        max_memory=max_memory,
         trust_remote_code=True,
         token=hf_token,
         low_cpu_mem_usage=True,
@@ -112,6 +122,7 @@ def load_model_and_tokenizer(model_id: str, adapter_repo: str | None, hf_token: 
         model = PeftModel.from_pretrained(model, adapter_repo, token=hf_token)
 
     model.eval()
+    model.config.use_cache = False
     return model, tokenizer
 
 
@@ -134,6 +145,7 @@ def generate_response(model, tokenizer, system_prompt: str, emotion: str, prompt
             max_new_tokens=max_new_tokens,
             do_sample=False,
             repetition_penalty=1.05,
+            use_cache=False,
             pad_token_id=tokenizer.eos_token_id,
             eos_token_id=tokenizer.eos_token_id,
         )
