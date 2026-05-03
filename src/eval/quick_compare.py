@@ -1,10 +1,9 @@
 #!/usr/bin/env python3
 """Quick base-vs-fine-tuned response comparison for EFSM.
 
-The script loads Qwen2.5-7B-Instruct in 4-bit, generates base responses for a
-fixed prompt set, unloads it, then reloads the same base model with the trained
-LoRA adapter and generates fine-tuned responses. This keeps memory low enough
-for a single T4 and produces a CSV table for the project demo/report.
+The preferred path loads one Qwen2.5-7B-Instruct model with the trained LoRA
+adapter, then temporarily disables the adapter to produce the base response.
+This gives a fair comparison without loading two separate 7B models.
 """
 
 import argparse
@@ -98,6 +97,10 @@ def build_qwen_device_map(model_id: str, hf_token: str | None, strategy: str):
     """
     config = AutoConfig.from_pretrained(model_id, trust_remote_code=True, token=hf_token)
     num_layers = int(config.num_hidden_layers)
+
+    if strategy == "single_gpu_4bit":
+        max_memory = {0: "13GiB", "cpu": "48GiB"}
+        return {"": 0}, max_memory
 
     if strategy == "auto":
         max_memory = {i: "12GiB" for i in range(torch.cuda.device_count())}
@@ -207,6 +210,60 @@ def release_model(model) -> None:
         torch.cuda.empty_cache()
 
 
+def run_single_peft_comparison(
+    model_id: str,
+    adapter_repo: str,
+    system_prompt: str,
+    hf_token: str | None,
+    prompts: list[dict],
+    max_new_tokens: int,
+    device_strategy: str,
+) -> list[dict]:
+    """Compare base vs tuned responses from one loaded PEFT model."""
+    print("\nLoading one base model with LoRA adapter...")
+    model, tokenizer = load_model_and_tokenizer(
+        model_id,
+        adapter_repo=adapter_repo,
+        hf_token=hf_token,
+        strategy=device_strategy,
+    )
+
+    rows = []
+    for item in prompts:
+        print(f"Compare: {item['id']}")
+        with model.disable_adapter():
+            base_response = generate_response(
+                model,
+                tokenizer,
+                system_prompt,
+                item["emotion"],
+                item["prompt"],
+                max_new_tokens,
+            )
+
+        fine_tuned_response = generate_response(
+            model,
+            tokenizer,
+            system_prompt,
+            item["emotion"],
+            item["prompt"],
+            max_new_tokens,
+        )
+
+        rows.append(
+            {
+                "id": item["id"],
+                "emotion": item["emotion"],
+                "prompt": item["prompt"],
+                "base_response": base_response,
+                "fine_tuned_response": fine_tuned_response,
+            }
+        )
+
+    release_model(model)
+    return rows
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", default="configs/config.yaml")
@@ -215,9 +272,15 @@ def main() -> None:
     parser.add_argument("--max-new-tokens", type=int, default=80)
     parser.add_argument(
         "--device-strategy",
-        choices=["cpu_offload", "two_gpu", "auto"],
-        default="cpu_offload",
-        help="cpu_offload is slow but safest on Kaggle T4 for demo evaluation.",
+        choices=["single_gpu_4bit", "cpu_offload", "two_gpu", "auto"],
+        default="single_gpu_4bit",
+        help="single_gpu_4bit is best for Colab/Kaggle when using --compare-mode single_peft.",
+    )
+    parser.add_argument(
+        "--compare-mode",
+        choices=["single_peft", "sequential"],
+        default="single_peft",
+        help="single_peft compares base vs tuned with one loaded PEFT model.",
     )
     args = parser.parse_args()
 
@@ -232,51 +295,62 @@ def main() -> None:
     print(f"Adapter: {adapter_repo}")
     print(f"Prompts: {len(prompts)}")
 
-    print("\nLoading base model...")
-    base_model, tokenizer = load_model_and_tokenizer(
-        model_id,
-        adapter_repo=None,
-        hf_token=hf_token,
-        strategy=args.device_strategy,
-    )
-    rows = []
-    for item in prompts:
-        print(f"Base: {item['id']}")
-        rows.append(
-            {
-                "id": item["id"],
-                "emotion": item["emotion"],
-                "prompt": item["prompt"],
-                "base_response": generate_response(
-                    base_model,
-                    tokenizer,
-                    system_prompt,
-                    item["emotion"],
-                    item["prompt"],
-                    args.max_new_tokens,
-                ),
-            }
+    if args.compare_mode == "single_peft":
+        rows = run_single_peft_comparison(
+            model_id=model_id,
+            adapter_repo=adapter_repo,
+            system_prompt=system_prompt,
+            hf_token=hf_token,
+            prompts=prompts,
+            max_new_tokens=args.max_new_tokens,
+            device_strategy=args.device_strategy,
         )
-    release_model(base_model)
+    else:
+        print("\nLoading base model...")
+        base_model, tokenizer = load_model_and_tokenizer(
+            model_id,
+            adapter_repo=None,
+            hf_token=hf_token,
+            strategy=args.device_strategy,
+        )
+        rows = []
+        for item in prompts:
+            print(f"Base: {item['id']}")
+            rows.append(
+                {
+                    "id": item["id"],
+                    "emotion": item["emotion"],
+                    "prompt": item["prompt"],
+                    "base_response": generate_response(
+                        base_model,
+                        tokenizer,
+                        system_prompt,
+                        item["emotion"],
+                        item["prompt"],
+                        args.max_new_tokens,
+                    ),
+                }
+            )
+        release_model(base_model)
 
-    print("\nLoading fine-tuned model...")
-    tuned_model, tokenizer = load_model_and_tokenizer(
-        model_id,
-        adapter_repo=adapter_repo,
-        hf_token=hf_token,
-        strategy=args.device_strategy,
-    )
-    for row in rows:
-        print(f"Fine-tuned: {row['id']}")
-        row["fine_tuned_response"] = generate_response(
-            tuned_model,
-            tokenizer,
-            system_prompt,
-            row["emotion"],
-            row["prompt"],
-            args.max_new_tokens,
+        print("\nLoading fine-tuned model...")
+        tuned_model, tokenizer = load_model_and_tokenizer(
+            model_id,
+            adapter_repo=adapter_repo,
+            hf_token=hf_token,
+            strategy=args.device_strategy,
         )
-    release_model(tuned_model)
+        for row in rows:
+            print(f"Fine-tuned: {row['id']}")
+            row["fine_tuned_response"] = generate_response(
+                tuned_model,
+                tokenizer,
+                system_prompt,
+                row["emotion"],
+                row["prompt"],
+                args.max_new_tokens,
+            )
+        release_model(tuned_model)
 
     output_path = Path(args.output)
     output_path.parent.mkdir(parents=True, exist_ok=True)
