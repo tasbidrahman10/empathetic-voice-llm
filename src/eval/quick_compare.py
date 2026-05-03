@@ -120,16 +120,16 @@ def generate_response(model, tokenizer, system_prompt: str, emotion: str, prompt
         {"role": "system", "content": system_prompt},
         {"role": "user", "content": user_content},
     ]
-    input_ids = tokenizer.apply_chat_template(
+    prompt_text = tokenizer.apply_chat_template(
         messages,
-        tokenize=True,
+        tokenize=False,
         add_generation_prompt=True,
-        return_tensors="pt",
-    ).to(model.device)
+    )
+    inputs = tokenizer(prompt_text, return_tensors="pt").to(model.device)
 
     with torch.no_grad():
         output_ids = model.generate(
-            input_ids=input_ids,
+            **inputs,
             max_new_tokens=max_new_tokens,
             do_sample=False,
             repetition_penalty=1.05,
@@ -137,7 +137,7 @@ def generate_response(model, tokenizer, system_prompt: str, emotion: str, prompt
             eos_token_id=tokenizer.eos_token_id,
         )
 
-    response_ids = output_ids[0, input_ids.shape[-1] :]
+    response_ids = output_ids[0, inputs["input_ids"].shape[-1] :]
     return tokenizer.decode(response_ids, skip_special_tokens=True).strip()
 
 
