@@ -82,6 +82,16 @@ DEFAULT_PROMPTS = [
 ]
 
 
+THERAPEUTIC_SYSTEM_PROMPT = """You are an empathetic therapeutic conversation partner.
+Respond like a warm, careful counselor in 3 to 5 sentences.
+First acknowledge the user's emotion clearly.
+Then validate why that feeling makes sense.
+Then gently invite them to share more or reflect, without rushing into advice.
+Do not give generic reassurance such as "you'll be fine."
+Do not immediately problem-solve unless the user asks for solutions.
+Make the person feel heard, understood, and emotionally safe."""
+
+
 def load_config(config_path: str) -> dict:
     with open(config_path, "r", encoding="utf-8") as f:
         return yaml.safe_load(f)
@@ -282,18 +292,29 @@ def main() -> None:
         default="single_peft",
         help="single_peft compares base vs tuned with one loaded PEFT model.",
     )
+    parser.add_argument(
+        "--system-prompt-style",
+        choices=["config", "therapeutic"],
+        default="config",
+        help="Use config prompt or a stronger therapeutic evaluation prompt.",
+    )
     args = parser.parse_args()
 
     cfg = load_config(args.config)
     model_id = cfg["model"]["model_id"]
     adapter_repo = cfg["model"]["hf_hub_checkpoint_repo"]
-    system_prompt = cfg["system_prompt"].strip()
+    system_prompt = (
+        THERAPEUTIC_SYSTEM_PROMPT
+        if args.system_prompt_style == "therapeutic"
+        else cfg["system_prompt"].strip()
+    )
     hf_token = os.environ.get("HF_TOKEN")
     prompts = DEFAULT_PROMPTS[: args.limit]
 
     print(f"Model: {model_id}")
     print(f"Adapter: {adapter_repo}")
     print(f"Prompts: {len(prompts)}")
+    print(f"System prompt style: {args.system_prompt_style}")
 
     if args.compare_mode == "single_peft":
         rows = run_single_peft_comparison(
