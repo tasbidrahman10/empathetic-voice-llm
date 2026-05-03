@@ -103,9 +103,10 @@ def load_model_and_tokenizer(model_id: str, adapter_repo: str | None, hf_token: 
     model = AutoModelForCausalLM.from_pretrained(
         model_id,
         quantization_config=bnb_config,
-        device_map={"": 0},
+        device_map="auto",
         trust_remote_code=True,
         token=hf_token,
+        low_cpu_mem_usage=True,
     )
     if adapter_repo:
         model = PeftModel.from_pretrained(model, adapter_repo, token=hf_token)
@@ -153,7 +154,7 @@ def main() -> None:
     parser.add_argument("--config", default="configs/config.yaml")
     parser.add_argument("--output", default="results/quick_eval_results.csv")
     parser.add_argument("--limit", type=int, default=len(DEFAULT_PROMPTS))
-    parser.add_argument("--max-new-tokens", type=int, default=120)
+    parser.add_argument("--max-new-tokens", type=int, default=80)
     args = parser.parse_args()
 
     cfg = load_config(args.config)
