@@ -88,56 +88,80 @@ def load_config(config_path: str) -> dict:
         return yaml.safe_load(f)
 
 
-def build_qwen_device_map(model_id: str, hf_token: str | None):
-    """Explicitly split Qwen layers across two GPUs.
+def build_qwen_device_map(model_id: str, hf_token: str | None, strategy: str):
+    """Build a memory-safe device map for quick evaluation.
 
-    Kaggle sometimes exposes two T4s but Accelerate still packs this 4-bit model
-    onto cuda:0. This map makes cuda:1 carry the later transformer blocks and
-    output head so generation has breathing room.
+    Kaggle sometimes exposes two T4s but the process still packs generation onto
+    cuda:0. The safest demo path is CPU offload: keep early blocks on cuda:0 and
+    move later blocks + output head to CPU. It is slower, but it avoids the
+    single-T4 memory cliff.
     """
-    if not torch.cuda.is_available() or torch.cuda.device_count() < 2:
-        return "auto", None
-
     config = AutoConfig.from_pretrained(model_id, trust_remote_code=True, token=hf_token)
     num_layers = int(config.num_hidden_layers)
-    split = num_layers // 2
+
+    if strategy == "auto":
+        max_memory = {i: "12GiB" for i in range(torch.cuda.device_count())}
+        max_memory["cpu"] = "48GiB"
+        return "auto", max_memory
+
+    if strategy == "two_gpu" and torch.cuda.is_available() and torch.cuda.device_count() >= 2:
+        split = num_layers // 2
+        device_map = {
+            "model.embed_tokens": 0,
+            "model.norm": 1,
+            "lm_head": 1,
+        }
+        for layer_idx in range(num_layers):
+            device_map[f"model.layers.{layer_idx}"] = 0 if layer_idx < split else 1
+
+        max_memory = {0: "13GiB", 1: "13GiB", "cpu": "48GiB"}
+        print(f"Using explicit two-GPU map: layers 0-{split - 1} on cuda:0, {split}-{num_layers - 1} on cuda:1")
+        return device_map, max_memory
+
+    gpu_layers = max(8, num_layers // 3)
 
     device_map = {
         "model.embed_tokens": 0,
-        "model.norm": 1,
-        "lm_head": 1,
+        "model.norm": "cpu",
+        "lm_head": "cpu",
     }
     for layer_idx in range(num_layers):
-        device_map[f"model.layers.{layer_idx}"] = 0 if layer_idx < split else 1
+        device_map[f"model.layers.{layer_idx}"] = 0 if layer_idx < gpu_layers else "cpu"
 
-    max_memory = {0: "13GiB", 1: "13GiB", "cpu": "48GiB"}
-    print(f"Using explicit two-GPU map: layers 0-{split - 1} on cuda:0, {split}-{num_layers - 1} on cuda:1")
+    max_memory = {0: "10GiB", "cpu": "96GiB"}
+    print(f"Using CPU-offload map: layers 0-{gpu_layers - 1} on cuda:0, {gpu_layers}-{num_layers - 1} on CPU")
     return device_map, max_memory
 
 
-def load_model_and_tokenizer(model_id: str, adapter_repo: str | None, hf_token: str | None):
-    bnb_config = BitsAndBytesConfig(
-        load_in_4bit=True,
-        bnb_4bit_quant_type="nf4",
-        bnb_4bit_compute_dtype=torch.float16,
-        bnb_4bit_use_double_quant=True,
-    )
-
+def load_model_and_tokenizer(model_id: str, adapter_repo: str | None, hf_token: str | None, strategy: str):
     tokenizer = AutoTokenizer.from_pretrained(model_id, trust_remote_code=True, token=hf_token)
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
 
     print(f"Visible CUDA devices: {torch.cuda.device_count() if torch.cuda.is_available() else 0}")
-    device_map, max_memory = build_qwen_device_map(model_id, hf_token)
+    device_map, max_memory = build_qwen_device_map(model_id, hf_token, strategy)
+
+    load_kwargs = {
+        "device_map": device_map,
+        "max_memory": max_memory,
+        "trust_remote_code": True,
+        "token": hf_token,
+        "low_cpu_mem_usage": True,
+        "offload_folder": "offload",
+    }
+    if strategy == "cpu_offload":
+        load_kwargs["torch_dtype"] = torch.float16
+    else:
+        load_kwargs["quantization_config"] = BitsAndBytesConfig(
+            load_in_4bit=True,
+            bnb_4bit_quant_type="nf4",
+            bnb_4bit_compute_dtype=torch.float16,
+            bnb_4bit_use_double_quant=True,
+        )
 
     model = AutoModelForCausalLM.from_pretrained(
         model_id,
-        quantization_config=bnb_config,
-        device_map=device_map,
-        max_memory=max_memory,
-        trust_remote_code=True,
-        token=hf_token,
-        low_cpu_mem_usage=True,
+        **load_kwargs,
     )
     if adapter_repo:
         model = PeftModel.from_pretrained(model, adapter_repo, token=hf_token)
@@ -158,7 +182,8 @@ def generate_response(model, tokenizer, system_prompt: str, emotion: str, prompt
         tokenize=False,
         add_generation_prompt=True,
     )
-    inputs = tokenizer(prompt_text, return_tensors="pt").to(model.device)
+    first_device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+    inputs = tokenizer(prompt_text, return_tensors="pt").to(first_device)
 
     with torch.no_grad():
         output_ids = model.generate(
@@ -188,6 +213,12 @@ def main() -> None:
     parser.add_argument("--output", default="results/quick_eval_results.csv")
     parser.add_argument("--limit", type=int, default=len(DEFAULT_PROMPTS))
     parser.add_argument("--max-new-tokens", type=int, default=80)
+    parser.add_argument(
+        "--device-strategy",
+        choices=["cpu_offload", "two_gpu", "auto"],
+        default="cpu_offload",
+        help="cpu_offload is slow but safest on Kaggle T4 for demo evaluation.",
+    )
     args = parser.parse_args()
 
     cfg = load_config(args.config)
@@ -202,7 +233,12 @@ def main() -> None:
     print(f"Prompts: {len(prompts)}")
 
     print("\nLoading base model...")
-    base_model, tokenizer = load_model_and_tokenizer(model_id, adapter_repo=None, hf_token=hf_token)
+    base_model, tokenizer = load_model_and_tokenizer(
+        model_id,
+        adapter_repo=None,
+        hf_token=hf_token,
+        strategy=args.device_strategy,
+    )
     rows = []
     for item in prompts:
         print(f"Base: {item['id']}")
@@ -224,7 +260,12 @@ def main() -> None:
     release_model(base_model)
 
     print("\nLoading fine-tuned model...")
-    tuned_model, tokenizer = load_model_and_tokenizer(model_id, adapter_repo=adapter_repo, hf_token=hf_token)
+    tuned_model, tokenizer = load_model_and_tokenizer(
+        model_id,
+        adapter_repo=adapter_repo,
+        hf_token=hf_token,
+        strategy=args.device_strategy,
+    )
     for row in rows:
         print(f"Fine-tuned: {row['id']}")
         row["fine_tuned_response"] = generate_response(
