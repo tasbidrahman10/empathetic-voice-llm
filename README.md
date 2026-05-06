@@ -99,6 +99,73 @@ Required Kaggle Secrets: `HF_TOKEN`, `WANDB_API_KEY`, `ANTHROPIC_API_KEY` (Phase
 
 ---
 
+## Final Speech Demo
+
+The final deadline demo is implemented as a practical end-to-end speech system:
+
+```text
+microphone audio -> Whisper ASR -> Qwen2.5-7B + EFSM LoRA -> TTS audio reply
+```
+
+The original research target is unified speech-to-speech Qwen2.5-Omni behavior.
+Because the completed fine-tuning artifact is a Qwen2.5-7B-Instruct Thinker-style
+LoRA adapter, the submitted demo wraps the fine-tuned model with ASR and TTS so
+the supervisor can test a working speech-in/speech-out empathetic assistant.
+
+Default demo checkpoint:
+
+- Base model: `Qwen/Qwen2.5-7B-Instruct`
+- Adapter repository: `tasbid001/efsm-checkpoints-fixed`
+- Adapter subfolder: `checkpoint-2667`
+- ASR model: `openai/whisper-base`
+- UI: Gradio
+- TTS: local `pyttsx3` WAV generation
+
+Run the UI:
+
+```bash
+pip install -r requirements.txt
+python demo/app.py
+```
+
+For Kaggle, use the ready-to-run notebook:
+
+```text
+notebooks/04_kaggle_full_demo.ipynb
+```
+
+Then open:
+
+```text
+http://127.0.0.1:7860
+```
+
+On Colab/Kaggle or a remote GPU machine, add `--share` to get a public Gradio
+link:
+
+```bash
+python demo/app.py --share
+```
+
+For a quick UI-only test without loading the 7B model:
+
+```bash
+python demo/app.py --mock
+```
+
+If you want to test a different checkpoint:
+
+```bash
+python demo/app.py --adapter-subfolder checkpoint-1800
+```
+
+The demo includes an interrupt button. In the final report, describe this as
+app-level interruptible duplex behavior: the user can stop the current assistant
+turn and immediately provide new speech input. This is the practical demo
+version of the full-duplex behavior described in the research plan.
+
+---
+
 ## Key Hyperparameters
 
 See [configs/config.yaml](configs/config.yaml) for full settings. Key values:
