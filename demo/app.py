@@ -76,9 +76,10 @@ class EFSMEngine:
             from peft import PeftModel
             from transformers import (
                 AutoModelForCausalLM,
+                AutoModelForSpeechSeq2Seq,
+                AutoProcessor,
                 AutoTokenizer,
                 BitsAndBytesConfig,
-                pipeline,
             )
 
             if not torch.cuda.is_available():
@@ -87,12 +88,14 @@ class EFSMEngine:
                     "Run with --mock for UI testing only."
                 )
 
-            self._asr = pipeline(
-                "automatic-speech-recognition",
-                model=self.config.asr_model_id,
-                device=0,
+            asr_processor = AutoProcessor.from_pretrained(self.config.asr_model_id)
+            asr_model = AutoModelForSpeechSeq2Seq.from_pretrained(
+                self.config.asr_model_id,
                 torch_dtype=torch.float16,
-            )
+                low_cpu_mem_usage=True,
+            ).to("cuda:0")
+            asr_model.eval()
+            self._asr = {"processor": asr_processor, "model": asr_model}
 
             tokenizer = AutoTokenizer.from_pretrained(
                 self.config.model_id,
@@ -138,14 +141,26 @@ class EFSMEngine:
 
         self.load()
         assert self._asr is not None
+        import torch
         import librosa
 
         # Gradio public links can hand us browser-recorded audio files whose
-        # container metadata confuses the Transformers ASR pipeline. Loading the
-        # file ourselves gives Whisper a plain mono 16 kHz waveform instead.
+        # container metadata confuses the Transformers ASR pipeline. We bypass
+        # that pipeline entirely and call Whisper generate() on a plain mono
+        # 16 kHz waveform.
         waveform, sample_rate = librosa.load(audio_path, sr=16000, mono=True)
-        result = self._asr({"array": waveform, "sampling_rate": sample_rate})
-        text = result.get("text", "") if isinstance(result, dict) else str(result)
+        processor = self._asr["processor"]
+        asr_model = self._asr["model"]
+        inputs = processor(
+            waveform,
+            sampling_rate=sample_rate,
+            return_tensors="pt",
+        )
+        input_features = inputs.input_features.to(device="cuda:0", dtype=torch.float16)
+
+        with torch.no_grad():
+            predicted_ids = asr_model.generate(input_features)
+        text = processor.batch_decode(predicted_ids, skip_special_tokens=True)[0]
         return " ".join(text.strip().split())
 
     def respond(self, user_text: str, history: list[list[str | None]], system_prompt: str) -> str:
