@@ -121,7 +121,7 @@ Default demo checkpoint:
 - UI: Gradio
 - TTS: neural `edge-tts` by default, with `espeak`/`pyttsx3` fallback
 - Session memory: recent turns are kept in Gradio state for the current demo session
-- Voice style: Edge TTS uses lightweight emotion-aware SSML based on the latest transcript
+- Voice style: Edge TTS adjusts rate/pitch lightly based on the latest transcript
 
 Run the UI:
 

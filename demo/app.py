@@ -18,7 +18,6 @@ import shutil
 import subprocess
 import tempfile
 import threading
-import html
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -239,34 +238,20 @@ class EFSMEngine:
             return "positive"
         return "neutral"
 
-    def edge_ssml(self, text: str, user_text: str) -> str:
+    def edge_voice_controls(self, user_text: str) -> tuple[str, str]:
         emotion = self.infer_emotion(user_text)
-        style = self.config.edge_style
         rate = "-4%"
         pitch = "-2Hz"
-        if style == "auto":
-            if emotion in {"sad", "anxious"}:
-                style = "empathetic"
-                rate = "-8%"
-                pitch = "-4Hz"
-            elif emotion == "angry":
-                style = "calm"
-                rate = "-6%"
-            elif emotion == "positive":
-                style = "friendly"
-                rate = "+0%"
-                pitch = "+2Hz"
-            else:
-                style = "gentle"
-
-        escaped_text = html.escape(text)
-        return f"""<speak version="1.0" xml:lang="en-US" xmlns="http://www.w3.org/2001/10/synthesis" xmlns:mstts="https://www.w3.org/2001/mstts">
-<voice name="{self.config.edge_voice}">
-<mstts:express-as style="{style}">
-<prosody rate="{rate}" pitch="{pitch}">{escaped_text}</prosody>
-</mstts:express-as>
-</voice>
-</speak>"""
+        if emotion in {"sad", "anxious"}:
+            rate = "-10%"
+            pitch = "-4Hz"
+        elif emotion == "angry":
+            rate = "-8%"
+            pitch = "-3Hz"
+        elif emotion == "positive":
+            rate = "+0%"
+            pitch = "+2Hz"
+        return rate, pitch
 
     def synthesize(self, text: str, user_text: str = "") -> str | None:
         if not text:
@@ -279,9 +264,12 @@ class EFSMEngine:
             try:
                 import edge_tts
 
+                rate, pitch = self.edge_voice_controls(user_text)
                 communicate = edge_tts.Communicate(
-                    self.edge_ssml(text, user_text),
+                    text,
                     voice=self.config.edge_voice,
+                    rate=rate,
+                    pitch=pitch,
                 )
                 loop = asyncio.new_event_loop()
                 try:
