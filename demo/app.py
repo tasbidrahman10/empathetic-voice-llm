@@ -18,6 +18,7 @@ import shutil
 import subprocess
 import tempfile
 import threading
+import html
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -34,6 +35,7 @@ Use natural spoken language, not formal counseling templates.
 First, name what the person seems to be feeling in a specific way.
 Then validate why that feeling makes sense in their situation.
 Then offer one small grounding thought or next step, and gently invite them to continue.
+Use the recent conversation history naturally. If the user is continuing a previous thought, do not reset the conversation.
 Write 4 to 6 short sentences.
 Avoid robotic phrases like "I am sorry to hear that" as the whole response.
 Avoid empty reassurance like "you will get through this" unless you explain why in a grounded way.
@@ -53,6 +55,7 @@ class DemoConfig:
     tts_rate: int
     tts_provider: str
     edge_voice: str
+    edge_style: str
     tts_voice_contains: str | None
     share: bool
     mock: bool
@@ -195,7 +198,7 @@ class EFSMEngine:
                 return stop_event.is_set()
 
         messages: list[dict[str, str]] = [{"role": "system", "content": system_prompt.strip()}]
-        for user_turn, assistant_turn in history[-4:]:
+        for user_turn, assistant_turn in history[-8:]:
             if user_turn:
                 messages.append({"role": "user", "content": user_turn})
             if assistant_turn:
@@ -224,7 +227,48 @@ class EFSMEngine:
         response_ids = output_ids[0, inputs["input_ids"].shape[-1] :]
         return self._tokenizer.decode(response_ids, skip_special_tokens=True).strip()
 
-    def synthesize(self, text: str) -> str | None:
+    def infer_emotion(self, text: str) -> str:
+        lowered = text.lower()
+        if any(word in lowered for word in ["depressed", "hopeless", "lost", "sad", "failed", "cry", "worthless"]):
+            return "sad"
+        if any(word in lowered for word in ["anxious", "panic", "scared", "afraid", "worry", "nervous"]):
+            return "anxious"
+        if any(word in lowered for word in ["angry", "mad", "furious", "betrayed", "annoyed"]):
+            return "angry"
+        if any(word in lowered for word in ["happy", "proud", "excited", "relieved", "grateful"]):
+            return "positive"
+        return "neutral"
+
+    def edge_ssml(self, text: str, user_text: str) -> str:
+        emotion = self.infer_emotion(user_text)
+        style = self.config.edge_style
+        rate = "-4%"
+        pitch = "-2Hz"
+        if style == "auto":
+            if emotion in {"sad", "anxious"}:
+                style = "empathetic"
+                rate = "-8%"
+                pitch = "-4Hz"
+            elif emotion == "angry":
+                style = "calm"
+                rate = "-6%"
+            elif emotion == "positive":
+                style = "friendly"
+                rate = "+0%"
+                pitch = "+2Hz"
+            else:
+                style = "gentle"
+
+        escaped_text = html.escape(text)
+        return f"""<speak version="1.0" xml:lang="en-US" xmlns="http://www.w3.org/2001/10/synthesis" xmlns:mstts="https://www.w3.org/2001/mstts">
+<voice name="{self.config.edge_voice}">
+<mstts:express-as style="{style}">
+<prosody rate="{rate}" pitch="{pitch}">{escaped_text}</prosody>
+</mstts:express-as>
+</voice>
+</speak>"""
+
+    def synthesize(self, text: str, user_text: str = "") -> str | None:
         if not text:
             return None
         if self._stop_event.is_set():
@@ -236,10 +280,8 @@ class EFSMEngine:
                 import edge_tts
 
                 communicate = edge_tts.Communicate(
-                    text,
+                    self.edge_ssml(text, user_text),
                     voice=self.config.edge_voice,
-                    rate="+0%",
-                    pitch="+0Hz",
                 )
                 loop = asyncio.new_event_loop()
                 try:
@@ -302,7 +344,7 @@ def build_demo(engine: EFSMEngine) -> gr.Blocks:
     with gr.Blocks(title="EFSM Speech Demo", css=css) as demo:
         gr.Markdown(
             "# EFSM Speech Demo\n"
-            "Speak into the microphone, then EFSM transcribes, responds empathetically, and returns speech."
+            "Speak into the microphone, then EFSM transcribes, responds with session memory, and returns speech."
         )
         status = gr.Textbox(label="Status", value="Models are not loaded yet.", interactive=False, elem_id="status")
 
@@ -355,7 +397,7 @@ def build_demo(engine: EFSMEngine) -> gr.Blocks:
 
             assistant_text = engine.respond(user_text, history, prompt)
             completed_history = history + [[user_text, assistant_text]]
-            audio_out = engine.synthesize(assistant_text)
+            audio_out = engine.synthesize(assistant_text, user_text)
             return completed_history, completed_history, user_text, audio_out, "Turn complete."
 
         def clear_history():
@@ -396,6 +438,7 @@ def parse_args() -> DemoConfig:
     parser.add_argument("--tts-rate", type=int, default=165)
     parser.add_argument("--tts-provider", choices=["auto", "edge", "espeak", "pyttsx3"], default="auto")
     parser.add_argument("--edge-voice", default="en-US-JennyNeural")
+    parser.add_argument("--edge-style", default="auto")
     parser.add_argument("--tts-voice-contains", default=None)
     parser.add_argument("--share", action="store_true")
     parser.add_argument("--mock", action="store_true")
