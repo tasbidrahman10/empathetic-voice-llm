@@ -13,6 +13,8 @@ from __future__ import annotations
 
 import argparse
 import os
+import shutil
+import subprocess
 import tempfile
 import threading
 from dataclasses import dataclass
@@ -220,6 +222,23 @@ class EFSMEngine:
         if self._stop_event.is_set():
             return None
 
+        out_path = Path(tempfile.gettempdir()) / "efsm_reply.wav"
+        if os.name != "nt" and shutil.which("espeak"):
+            subprocess.run(
+                [
+                    "espeak",
+                    "-v",
+                    "en",
+                    "-s",
+                    str(self.config.tts_rate),
+                    "-w",
+                    str(out_path),
+                    text,
+                ],
+                check=True,
+            )
+            return str(out_path)
+
         try:
             import pyttsx3
         except ImportError as exc:
@@ -227,7 +246,6 @@ class EFSMEngine:
                 "pyttsx3 is not installed. Install requirements, then rerun the demo."
             ) from exc
 
-        out_path = Path(tempfile.gettempdir()) / "efsm_reply.wav"
         engine = pyttsx3.init()
         engine.setProperty("rate", self.config.tts_rate)
         if self.config.tts_voice_contains:
