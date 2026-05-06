@@ -138,7 +138,13 @@ class EFSMEngine:
 
         self.load()
         assert self._asr is not None
-        result = self._asr(audio_path)
+        import librosa
+
+        # Gradio public links can hand us browser-recorded audio files whose
+        # container metadata confuses the Transformers ASR pipeline. Loading the
+        # file ourselves gives Whisper a plain mono 16 kHz waveform instead.
+        waveform, sample_rate = librosa.load(audio_path, sr=16000, mono=True)
+        result = self._asr({"array": waveform, "sampling_rate": sample_rate})
         text = result.get("text", "") if isinstance(result, dict) else str(result)
         return " ".join(text.strip().split())
 
