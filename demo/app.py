@@ -12,6 +12,7 @@ layer. Use --mock to test the UI without loading the 7B model.
 from __future__ import annotations
 
 import argparse
+import asyncio
 import os
 import shutil
 import subprocess
@@ -28,9 +29,14 @@ import gradio as gr
 
 
 DEFAULT_SYSTEM_PROMPT = """You are EFSM, an empathetic therapeutic voice conversation partner.
-Respond in a warm, careful, emotionally validating way.
-First acknowledge the user's feeling, then validate why it makes sense, then gently invite reflection.
-Keep the reply conversational and concise, usually 3 to 5 sentences.
+Respond like a calm, humane friend who is emotionally mature and careful.
+Use natural spoken language, not formal counseling templates.
+First, name what the person seems to be feeling in a specific way.
+Then validate why that feeling makes sense in their situation.
+Then offer one small grounding thought or next step, and gently invite them to continue.
+Write 4 to 6 short sentences.
+Avoid robotic phrases like "I am sorry to hear that" as the whole response.
+Avoid empty reassurance like "you will get through this" unless you explain why in a grounded way.
 Do not diagnose, do not claim to be a licensed therapist, and do not give crisis instructions unless the user expresses danger.
 If the user may be at immediate risk of self-harm or harm to others, encourage contacting local emergency services or a trusted person right now."""
 
@@ -45,6 +51,8 @@ class DemoConfig:
     temperature: float
     top_p: float
     tts_rate: int
+    tts_provider: str
+    edge_voice: str
     tts_voice_contains: str | None
     share: bool
     mock: bool
@@ -222,8 +230,29 @@ class EFSMEngine:
         if self._stop_event.is_set():
             return None
 
+        if self.config.tts_provider in {"auto", "edge"}:
+            edge_path = Path(tempfile.gettempdir()) / "efsm_reply.mp3"
+            try:
+                import edge_tts
+
+                communicate = edge_tts.Communicate(
+                    text,
+                    voice=self.config.edge_voice,
+                    rate="+0%",
+                    pitch="+0Hz",
+                )
+                loop = asyncio.new_event_loop()
+                try:
+                    loop.run_until_complete(communicate.save(str(edge_path)))
+                finally:
+                    loop.close()
+                return str(edge_path)
+            except Exception:
+                if self.config.tts_provider == "edge":
+                    raise
+
         out_path = Path(tempfile.gettempdir()) / "efsm_reply.wav"
-        if os.name != "nt" and shutil.which("espeak"):
+        if self.config.tts_provider in {"auto", "espeak"} and os.name != "nt" and shutil.which("espeak"):
             subprocess.run(
                 [
                     "espeak",
@@ -238,6 +267,9 @@ class EFSMEngine:
                 check=True,
             )
             return str(out_path)
+
+        if self.config.tts_provider == "espeak":
+            raise RuntimeError("espeak was requested, but the espeak command was not found.")
 
         try:
             import pyttsx3
@@ -358,10 +390,12 @@ def parse_args() -> DemoConfig:
     parser.add_argument("--adapter-id", default="tasbid001/efsm-checkpoints-fixed")
     parser.add_argument("--adapter-subfolder", default="checkpoint-2667")
     parser.add_argument("--asr-model-id", default="openai/whisper-base")
-    parser.add_argument("--max-new-tokens", type=int, default=160)
-    parser.add_argument("--temperature", type=float, default=0.35)
-    parser.add_argument("--top-p", type=float, default=0.9)
+    parser.add_argument("--max-new-tokens", type=int, default=220)
+    parser.add_argument("--temperature", type=float, default=0.7)
+    parser.add_argument("--top-p", type=float, default=0.92)
     parser.add_argument("--tts-rate", type=int, default=165)
+    parser.add_argument("--tts-provider", choices=["auto", "edge", "espeak", "pyttsx3"], default="auto")
+    parser.add_argument("--edge-voice", default="en-US-JennyNeural")
     parser.add_argument("--tts-voice-contains", default=None)
     parser.add_argument("--share", action="store_true")
     parser.add_argument("--mock", action="store_true")

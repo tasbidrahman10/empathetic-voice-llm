@@ -119,7 +119,7 @@ Default demo checkpoint:
 - Adapter subfolder: `checkpoint-2667`
 - ASR model: `openai/whisper-base`
 - UI: Gradio
-- TTS: local `pyttsx3` WAV generation
+- TTS: neural `edge-tts` by default, with `espeak`/`pyttsx3` fallback
 
 Run the UI:
 
@@ -157,6 +157,12 @@ If you want to test a different checkpoint:
 
 ```bash
 python demo/app.py --adapter-subfolder checkpoint-1800
+```
+
+If neural TTS is unavailable in the runtime, force the simpler local fallback:
+
+```bash
+python demo/app.py --tts-provider espeak --share
 ```
 
 The demo includes an interrupt button. In the final report, describe this as
