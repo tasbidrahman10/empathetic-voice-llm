@@ -29,14 +29,14 @@ import gradio as gr
 
 
 DEFAULT_SYSTEM_PROMPT = """You are EFSM, an empathetic therapeutic voice conversation partner.
-Respond like a calm, humane friend who is emotionally mature and careful.
-Use natural spoken language, not formal counseling templates.
-First, name what the person seems to be feeling in a specific way.
-Then validate why that feeling makes sense in their situation.
-Then offer one small grounding thought or next step, and gently invite them to continue.
+Respond like a warm conversational companion, not a formal therapist and not a generic chatbot.
+Always reply with at least 3 meaningful sentences.
+Make the reply specific to the user's actual situation.
+If the user is sad, betrayed, anxious, ashamed, or hopeless: first validate the pain, then give a grounded logical reframe or motivation, then invite them to keep talking.
+If the user is happy, proud, relieved, or excited: reflect the positive emotion, celebrate the specific win, and encourage them to enjoy or build on it.
+For betrayal or breakup: be protective of the user's self-worth. You may gently say that being cheated on reflects the other person's choices, not the user's value.
 Use the recent conversation history naturally. If the user is continuing a previous thought, do not reset the conversation.
-Write 4 to 6 short sentences.
-Avoid robotic phrases like "I am sorry to hear that" as the whole response.
+Avoid robotic one-liners like "Oh no, sorry to hear that."
 Avoid empty reassurance like "you will get through this" unless you explain why in a grounded way.
 Do not diagnose, do not claim to be a licensed therapist, and do not give crisis instructions unless the user expresses danger.
 If the user may be at immediate risk of self-harm or harm to others, encourage contacting local emergency services or a trusted person right now."""
@@ -215,11 +215,68 @@ class EFSMEngine:
             output_ids = self._model.generate(
                 **inputs,
                 max_new_tokens=self.config.max_new_tokens,
+                min_new_tokens=min(70, self.config.max_new_tokens // 2),
                 do_sample=do_sample,
                 temperature=self.config.temperature if do_sample else None,
                 top_p=self.config.top_p if do_sample else None,
                 repetition_penalty=1.08,
                 stopping_criteria=StoppingCriteriaList([InterruptStoppingCriteria()]),
+                pad_token_id=self._tokenizer.eos_token_id,
+                eos_token_id=self._tokenizer.eos_token_id,
+            )
+        response_ids = output_ids[0, inputs["input_ids"].shape[-1] :]
+        response = self._tokenizer.decode(response_ids, skip_special_tokens=True).strip()
+        if self.needs_companion_rewrite(response):
+            response = self.rewrite_as_companion_response(user_text, response, system_prompt)
+        return response
+
+    def needs_companion_rewrite(self, response: str) -> bool:
+        stripped = response.strip()
+        if not stripped:
+            return True
+        sentence_count = sum(stripped.count(mark) for mark in [".", "!", "?"])
+        lowered = stripped.lower()
+        generic_phrases = [
+            "sorry to hear that",
+            "that's terrible news",
+            "you will get through this",
+            "oh no",
+        ]
+        return sentence_count < 3 or len(stripped.split()) < 35 or any(phrase in lowered for phrase in generic_phrases)
+
+    def rewrite_as_companion_response(self, user_text: str, draft: str, system_prompt: str) -> str:
+        import torch
+
+        assert self._model is not None
+        assert self._tokenizer is not None
+
+        repair_prompt = (
+            f"{system_prompt.strip()}\n\n"
+            "The previous assistant reply was too short or generic. Rewrite it as a human conversational companion.\n"
+            "Rules: write 3 to 5 natural sentences; be specific to the user's situation; include one grounded reframe or motivation; "
+            "end with a gentle invitation to keep talking. Do not mention that you are rewriting.\n"
+            f"User message: {user_text}\n"
+            f"Bad draft: {draft}"
+        )
+        messages = [
+            {"role": "system", "content": repair_prompt},
+            {"role": "user", "content": user_text},
+        ]
+        prompt_text = self._tokenizer.apply_chat_template(
+            messages,
+            tokenize=False,
+            add_generation_prompt=True,
+        )
+        inputs = self._tokenizer(prompt_text, return_tensors="pt").to("cuda:0")
+        with torch.no_grad():
+            output_ids = self._model.generate(
+                **inputs,
+                max_new_tokens=self.config.max_new_tokens,
+                min_new_tokens=min(80, self.config.max_new_tokens // 2),
+                do_sample=True,
+                temperature=max(self.config.temperature, 0.75),
+                top_p=self.config.top_p,
+                repetition_penalty=1.08,
                 pad_token_id=self._tokenizer.eos_token_id,
                 eos_token_id=self._tokenizer.eos_token_id,
             )
