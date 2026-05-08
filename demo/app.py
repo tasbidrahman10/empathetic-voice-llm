@@ -33,7 +33,7 @@ import gradio as gr
 
 DEFAULT_SYSTEM_PROMPT = """You are EFSM, an empathetic therapeutic voice conversation partner.
 Respond like a warm conversational companion, not a formal therapist and not a generic chatbot.
-Always reply with at least 3 meaningful sentences.
+Reply in 2 to 3 meaningful sentences.
 Make the reply specific to the user's actual situation.
 If the user is sad, betrayed, anxious, ashamed, or hopeless: first validate the pain, then give a grounded logical reframe or motivation, then invite them to keep talking.
 If the user is happy, proud, relieved, or excited: reflect the positive emotion, celebrate the specific win, and encourage them to enjoy or build on it.
@@ -52,8 +52,10 @@ class DemoConfig:
     adapter_subfolder: str | None
     asr_model_id: str
     max_new_tokens: int
+    min_new_tokens: int
     temperature: float
     top_p: float
+    rewrite_short_replies: bool
     tts_rate: int
     tts_provider: str
     edge_voice: str
@@ -235,7 +237,7 @@ class EFSMEngine:
             output_ids = self._model.generate(
                 **inputs,
                 max_new_tokens=self.config.max_new_tokens,
-                min_new_tokens=min(70, self.config.max_new_tokens // 2),
+                min_new_tokens=min(self.config.min_new_tokens, self.config.max_new_tokens // 2),
                 do_sample=do_sample,
                 temperature=self.config.temperature if do_sample else None,
                 top_p=self.config.top_p if do_sample else None,
@@ -248,7 +250,7 @@ class EFSMEngine:
         if self._stop_event.is_set():
             return ""
         response = self._tokenizer.decode(response_ids, skip_special_tokens=True).strip()
-        if self.needs_companion_rewrite(response):
+        if self.config.rewrite_short_replies and self.needs_companion_rewrite(response):
             response = self.rewrite_as_companion_response(user_text, response, system_prompt)
         return response
 
@@ -495,7 +497,12 @@ def build_demo(engine: EFSMEngine) -> gr.Blocks:
                 submit_audio = gr.Button("Retry Last Recording", variant="secondary", elem_id="primary_voice_btn")
             with gr.Column(scale=1):
                 transcript = gr.Textbox(label="Transcript", lines=4, elem_classes=["compact"])
-                reply_audio = gr.Audio(label="Assistant Voice Reply", type="filepath", autoplay=True)
+                reply_audio = gr.Audio(
+                    label="Assistant Voice Reply",
+                    type="filepath",
+                    autoplay=True,
+                    elem_id="reply_audio",
+                )
 
         with gr.Accordion("Demo Controls", open=False):
             system_prompt = gr.Textbox(
@@ -566,6 +573,15 @@ def build_demo(engine: EFSMEngine) -> gr.Blocks:
                 audio.load();
             });
         }"""
+        play_reply_js = """() => {
+            setTimeout(() => {
+                const root = document.querySelector('#reply_audio') || document;
+                const audio = root.querySelector('audio');
+                if (audio && audio.src) {
+                    audio.play().catch(() => {});
+                }
+            }, 300);
+        }"""
 
         load_btn.click(load_models, outputs=status)
         audio_event = submit_audio.click(
@@ -603,6 +619,13 @@ def build_demo(engine: EFSMEngine) -> gr.Blocks:
             queue=False,
             js=stop_audio_js,
         )
+        reply_audio.change(
+            fn=None,
+            inputs=None,
+            outputs=None,
+            queue=False,
+            js=play_reply_js,
+        )
         clear_btn.click(clear_history, outputs=[chatbot, history_state, transcript, reply_audio, status])
 
     return demo
@@ -613,10 +636,12 @@ def parse_args() -> DemoConfig:
     parser.add_argument("--model-id", default="Qwen/Qwen2.5-7B-Instruct")
     parser.add_argument("--adapter-id", default="tasbid001/efsm-checkpoints-fixed")
     parser.add_argument("--adapter-subfolder", default="checkpoint-2667")
-    parser.add_argument("--asr-model-id", default="openai/whisper-base")
-    parser.add_argument("--max-new-tokens", type=int, default=220)
-    parser.add_argument("--temperature", type=float, default=0.7)
+    parser.add_argument("--asr-model-id", default="openai/whisper-tiny.en")
+    parser.add_argument("--max-new-tokens", type=int, default=120)
+    parser.add_argument("--min-new-tokens", type=int, default=35)
+    parser.add_argument("--temperature", type=float, default=0.55)
     parser.add_argument("--top-p", type=float, default=0.92)
+    parser.add_argument("--rewrite-short-replies", action="store_true")
     parser.add_argument("--tts-rate", type=int, default=165)
     parser.add_argument("--tts-provider", choices=["auto", "edge", "gtts", "espeak", "pyttsx3"], default="auto")
     parser.add_argument("--edge-voice", default="en-US-JennyNeural")
