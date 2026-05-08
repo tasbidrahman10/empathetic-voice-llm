@@ -492,7 +492,7 @@ def build_demo(engine: EFSMEngine) -> gr.Blocks:
                     type="filepath",
                     label="Microphone Input",
                 )
-                submit_audio = gr.Button("Send / Retry Voice", variant="primary", elem_id="primary_voice_btn")
+                submit_audio = gr.Button("Retry Last Recording", variant="secondary", elem_id="primary_voice_btn")
             with gr.Column(scale=1):
                 transcript = gr.Textbox(label="Transcript", lines=4, elem_classes=["compact"])
                 reply_audio = gr.Audio(label="Assistant Voice Reply", type="filepath", autoplay=True)
@@ -554,6 +554,19 @@ def build_demo(engine: EFSMEngine) -> gr.Blocks:
             engine.interrupt()
             return None, "Interrupted. You can speak again now."
 
+        def begin_recording():
+            engine.interrupt()
+            return None, "Listening. Tap stop when you finish speaking."
+
+        stop_audio_js = """() => {
+            document.querySelectorAll('audio').forEach((audio) => {
+                audio.pause();
+                audio.currentTime = 0;
+                audio.src = "";
+                audio.load();
+            });
+        }"""
+
         load_btn.click(load_models, outputs=status)
         audio_event = submit_audio.click(
             handle_turn,
@@ -561,6 +574,13 @@ def build_demo(engine: EFSMEngine) -> gr.Blocks:
             outputs=[chatbot, history_state, transcript, reply_audio, status],
             concurrency_limit=1,
             trigger_mode="always_last",
+        )
+        microphone.start_recording(
+            begin_recording,
+            outputs=[reply_audio, status],
+            cancels=[audio_event, text_event],
+            queue=False,
+            js=stop_audio_js,
         )
         auto_audio_event = microphone.stop_recording(
             handle_turn,
@@ -581,14 +601,7 @@ def build_demo(engine: EFSMEngine) -> gr.Blocks:
             outputs=[reply_audio, status],
             cancels=[audio_event, auto_audio_event, text_event],
             queue=False,
-            js="""() => {
-                document.querySelectorAll('audio').forEach((audio) => {
-                    audio.pause();
-                    audio.currentTime = 0;
-                    audio.src = "";
-                    audio.load();
-                });
-            }""",
+            js=stop_audio_js,
         )
         clear_btn.click(clear_history, outputs=[chatbot, history_state, transcript, reply_audio, status])
 
