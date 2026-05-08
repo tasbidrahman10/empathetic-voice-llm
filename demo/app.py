@@ -578,7 +578,7 @@ def build_demo(engine: EFSMEngine) -> gr.Blocks:
         microphone.start_recording(
             begin_recording,
             outputs=[reply_audio, status],
-            cancels=[audio_event, text_event],
+            cancels=[audio_event],
             queue=False,
             js=stop_audio_js,
         )
