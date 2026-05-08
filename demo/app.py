@@ -18,6 +18,7 @@ import shutil
 import subprocess
 import tempfile
 import threading
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -75,6 +76,9 @@ class EFSMEngine:
     def interrupt(self) -> str:
         self._stop_event.set()
         return "Interrupted. You can speak again now."
+
+    def is_interrupted(self) -> bool:
+        return self._stop_event.is_set()
 
     def load(self) -> str:
         if self.config.mock:
@@ -151,6 +155,16 @@ class EFSMEngine:
         if self.config.mock:
             return "I feel overwhelmed about finishing this project and presenting it well."
 
+        audio_file = Path(audio_path)
+        for _ in range(20):
+            if self._stop_event.is_set():
+                return ""
+            if audio_file.exists() and audio_file.stat().st_size > 0:
+                break
+            time.sleep(0.15)
+        if not audio_file.exists() or audio_file.stat().st_size == 0:
+            return ""
+
         self.load()
         assert self._asr is not None
         import torch
@@ -172,6 +186,8 @@ class EFSMEngine:
 
         with torch.no_grad():
             predicted_ids = asr_model.generate(input_features)
+        if self._stop_event.is_set():
+            return ""
         text = processor.batch_decode(predicted_ids, skip_special_tokens=True)[0]
         return " ".join(text.strip().split())
 
@@ -182,6 +198,8 @@ class EFSMEngine:
                 "You have already done the hardest research and training work, and now the pressure is about making it presentable. "
                 "Let's keep the next step small: what part feels most urgent right now, the demo, the report, or the evaluation evidence?"
             )
+        if self._stop_event.is_set():
+            return ""
 
         self.load()
         import torch
@@ -225,6 +243,8 @@ class EFSMEngine:
                 eos_token_id=self._tokenizer.eos_token_id,
             )
         response_ids = output_ids[0, inputs["input_ids"].shape[-1] :]
+        if self._stop_event.is_set():
+            return ""
         response = self._tokenizer.decode(response_ids, skip_special_tokens=True).strip()
         if self.needs_companion_rewrite(response):
             response = self.rewrite_as_companion_response(user_text, response, system_prompt)
@@ -246,9 +266,18 @@ class EFSMEngine:
 
     def rewrite_as_companion_response(self, user_text: str, draft: str, system_prompt: str) -> str:
         import torch
+        from transformers import StoppingCriteria, StoppingCriteriaList
 
         assert self._model is not None
         assert self._tokenizer is not None
+        if self._stop_event.is_set():
+            return ""
+
+        stop_event = self._stop_event
+
+        class InterruptStoppingCriteria(StoppingCriteria):
+            def __call__(self, input_ids, scores, **kwargs) -> bool:
+                return stop_event.is_set()
 
         repair_prompt = (
             f"{system_prompt.strip()}\n\n"
@@ -277,10 +306,13 @@ class EFSMEngine:
                 temperature=max(self.config.temperature, 0.75),
                 top_p=self.config.top_p,
                 repetition_penalty=1.08,
+                stopping_criteria=StoppingCriteriaList([InterruptStoppingCriteria()]),
                 pad_token_id=self._tokenizer.eos_token_id,
                 eos_token_id=self._tokenizer.eos_token_id,
             )
         response_ids = output_ids[0, inputs["input_ids"].shape[-1] :]
+        if self._stop_event.is_set():
+            return ""
         return self._tokenizer.decode(response_ids, skip_special_tokens=True).strip()
 
     def infer_emotion(self, text: str) -> str:
@@ -321,6 +353,8 @@ class EFSMEngine:
             try:
                 import edge_tts
 
+                if self._stop_event.is_set():
+                    return None
                 rate, pitch = self.edge_voice_controls(user_text)
                 communicate = edge_tts.Communicate(
                     text,
@@ -333,6 +367,8 @@ class EFSMEngine:
                     loop.run_until_complete(communicate.save(str(edge_path)))
                 finally:
                     loop.close()
+                if self._stop_event.is_set():
+                    return None
                 return str(edge_path)
             except Exception:
                 if self.config.tts_provider == "edge":
@@ -340,7 +376,7 @@ class EFSMEngine:
 
         out_path = Path(tempfile.gettempdir()) / "efsm_reply.wav"
         if self.config.tts_provider in {"auto", "espeak"} and os.name != "nt" and shutil.which("espeak"):
-            subprocess.run(
+            proc = subprocess.Popen(
                 [
                     "espeak",
                     "-v",
@@ -350,9 +386,17 @@ class EFSMEngine:
                     "-w",
                     str(out_path),
                     text,
-                ],
-                check=True,
+                ]
             )
+            while proc.poll() is None:
+                if self._stop_event.is_set():
+                    proc.terminate()
+                    return None
+                time.sleep(0.1)
+            if proc.returncode != 0:
+                raise subprocess.CalledProcessError(proc.returncode, proc.args)
+            if self._stop_event.is_set():
+                return None
             return str(out_path)
 
         if self.config.tts_provider == "espeak":
@@ -384,6 +428,7 @@ def build_demo(engine: EFSMEngine) -> gr.Blocks:
     css = """
     #status { min-height: 36px; }
     .compact textarea { font-size: 14px; }
+    #primary_voice_btn { min-height: 48px; }
     """
 
     with gr.Blocks(title="EFSM Speech Demo", css=css) as demo:
@@ -395,7 +440,7 @@ def build_demo(engine: EFSMEngine) -> gr.Blocks:
 
         with gr.Row():
             load_btn = gr.Button("Load Models", variant="secondary")
-            interrupt_btn = gr.Button("Interrupt / Stop Current Turn", variant="stop")
+            interrupt_btn = gr.Button("Interrupt", variant="stop")
             clear_btn = gr.Button("Clear Conversation")
 
         chatbot = gr.Chatbot(label="Conversation", height=360)
@@ -408,7 +453,7 @@ def build_demo(engine: EFSMEngine) -> gr.Blocks:
                     type="filepath",
                     label="Microphone Input",
                 )
-                submit_audio = gr.Button("Send Voice", variant="primary")
+                submit_audio = gr.Button("Send / Retry Voice", variant="primary", elem_id="primary_voice_btn")
             with gr.Column(scale=1):
                 transcript = gr.Textbox(label="Transcript", lines=4, elem_classes=["compact"])
                 reply_audio = gr.Audio(label="Assistant Voice Reply", type="filepath", autoplay=True)
@@ -436,17 +481,39 @@ def build_demo(engine: EFSMEngine) -> gr.Blocks:
             prompt: str,
         ):
             engine.clear_interrupt()
+            history = history or []
+            yield history, history, "", None, "Listening to your input..."
+
             user_text = typed_text.strip() if typed_text and typed_text.strip() else engine.transcribe(audio_path)
             if not user_text:
-                return history, history, "", None, "No speech or text was detected."
+                if engine.is_interrupted():
+                    yield history, history, "", None, "Interrupted. You can speak again now."
+                else:
+                    yield history, history, "", None, "No speech was detected. Wait a moment, then press Send / Retry Voice."
+                return
+
+            yield history + [[user_text, None]], history, user_text, None, "Transcribed. Generating EFSM response..."
 
             assistant_text = engine.respond(user_text, history, prompt)
+            if engine.is_interrupted() or not assistant_text:
+                yield history, history, user_text, None, "Interrupted. You can speak again now."
+                return
+
             completed_history = history + [[user_text, assistant_text]]
+            yield completed_history, completed_history, user_text, None, "Response ready. Creating voice reply..."
+
             audio_out = engine.synthesize(assistant_text, user_text)
-            return completed_history, completed_history, user_text, audio_out, "Turn complete."
+            if engine.is_interrupted():
+                yield completed_history, completed_history, user_text, None, "Interrupted. You can speak again now."
+                return
+            yield completed_history, completed_history, user_text, audio_out, "Turn complete. You can record the next message."
 
         def clear_history():
             return [], [], "", None, "Conversation cleared."
+
+        def interrupt_turn():
+            engine.interrupt()
+            return None, "Interrupted. You can speak again now."
 
         load_btn.click(load_models, outputs=status)
         audio_event = submit_audio.click(
@@ -454,17 +521,35 @@ def build_demo(engine: EFSMEngine) -> gr.Blocks:
             inputs=[microphone, manual_text, history_state, system_prompt],
             outputs=[chatbot, history_state, transcript, reply_audio, status],
             concurrency_limit=1,
+            trigger_mode="always_last",
+        )
+        auto_audio_event = microphone.stop_recording(
+            handle_turn,
+            inputs=[microphone, manual_text, history_state, system_prompt],
+            outputs=[chatbot, history_state, transcript, reply_audio, status],
+            concurrency_limit=1,
+            trigger_mode="always_last",
         )
         text_event = submit_text.click(
             handle_turn,
             inputs=[microphone, manual_text, history_state, system_prompt],
             outputs=[chatbot, history_state, transcript, reply_audio, status],
             concurrency_limit=1,
+            trigger_mode="always_last",
         )
         interrupt_btn.click(
-            engine.interrupt,
-            outputs=status,
-            cancels=[audio_event, text_event],
+            interrupt_turn,
+            outputs=[reply_audio, status],
+            cancels=[audio_event, auto_audio_event, text_event],
+            queue=False,
+            js="""() => {
+                document.querySelectorAll('audio').forEach((audio) => {
+                    audio.pause();
+                    audio.currentTime = 0;
+                    audio.src = "";
+                    audio.load();
+                });
+            }""",
         )
         clear_btn.click(clear_history, outputs=[chatbot, history_state, transcript, reply_audio, status])
 
