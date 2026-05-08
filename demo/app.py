@@ -13,7 +13,9 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import html
 import os
+import re
 import shutil
 import subprocess
 import tempfile
@@ -342,14 +344,34 @@ class EFSMEngine:
             pitch = "+2Hz"
         return rate, pitch
 
+    def clean_text_for_tts(self, text: str) -> str:
+        text = html.unescape(text or "")
+        text = re.sub(r"```.*?```", " ", text, flags=re.DOTALL)
+        text = re.sub(r"`([^`]+)`", r"\1", text)
+        text = re.sub(r"\*\*([^*]+)\*\*", r"\1", text)
+        text = re.sub(r"\*([^*]+)\*", r"\1", text)
+        text = re.sub(r"\[[^\]]+\]\([^)]+\)", " ", text)
+        text = re.sub(r"https?://\S+", " ", text)
+        text = re.sub(r"\[(emotion|assistant|user|system):[^\]]+\]", " ", text, flags=re.IGNORECASE)
+        text = re.sub(r"[_#>~|]+", " ", text)
+        text = re.sub(r"\s+", " ", text).strip()
+        return text
+
+    def make_temp_audio_path(self, suffix: str) -> Path:
+        handle = tempfile.NamedTemporaryFile(prefix="efsm_reply_", suffix=suffix, delete=False)
+        path = Path(handle.name)
+        handle.close()
+        return path
+
     def synthesize(self, text: str, user_text: str = "") -> str | None:
+        text = self.clean_text_for_tts(text)
         if not text:
             return None
         if self._stop_event.is_set():
             return None
 
         if self.config.tts_provider in {"auto", "edge"}:
-            edge_path = Path(tempfile.gettempdir()) / "efsm_reply.mp3"
+            edge_path = self.make_temp_audio_path(".mp3")
             try:
                 import edge_tts
 
@@ -370,11 +392,28 @@ class EFSMEngine:
                 if self._stop_event.is_set():
                     return None
                 return str(edge_path)
-            except Exception:
+            except Exception as exc:
                 if self.config.tts_provider == "edge":
                     raise
+                print(f"Edge TTS failed, trying fallback TTS: {exc}")
 
-        out_path = Path(tempfile.gettempdir()) / "efsm_reply.wav"
+        if self.config.tts_provider in {"auto", "gtts"}:
+            gtts_path = self.make_temp_audio_path(".mp3")
+            try:
+                from gtts import gTTS
+
+                if self._stop_event.is_set():
+                    return None
+                gTTS(text=text, lang="en", slow=False).save(str(gtts_path))
+                if self._stop_event.is_set():
+                    return None
+                return str(gtts_path)
+            except Exception as exc:
+                if self.config.tts_provider == "gtts":
+                    raise
+                print(f"gTTS failed, trying local fallback TTS: {exc}")
+
+        out_path = self.make_temp_audio_path(".wav")
         if self.config.tts_provider in {"auto", "espeak"} and os.name != "nt" and shutil.which("espeak"):
             proc = subprocess.Popen(
                 [
@@ -406,7 +445,7 @@ class EFSMEngine:
             import pyttsx3
         except ImportError as exc:
             raise RuntimeError(
-                "pyttsx3 is not installed. Install requirements, then rerun the demo."
+                "No usable TTS provider was available. Use --tts-provider edge or install gTTS/pyttsx3."
             ) from exc
 
         engine = pyttsx3.init()
@@ -566,7 +605,7 @@ def parse_args() -> DemoConfig:
     parser.add_argument("--temperature", type=float, default=0.7)
     parser.add_argument("--top-p", type=float, default=0.92)
     parser.add_argument("--tts-rate", type=int, default=165)
-    parser.add_argument("--tts-provider", choices=["auto", "edge", "espeak", "pyttsx3"], default="auto")
+    parser.add_argument("--tts-provider", choices=["auto", "edge", "gtts", "espeak", "pyttsx3"], default="auto")
     parser.add_argument("--edge-voice", default="en-US-JennyNeural")
     parser.add_argument("--edge-style", default="auto")
     parser.add_argument("--tts-voice-contains", default=None)
