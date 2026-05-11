@@ -1,0 +1,291 @@
+EFSM Phase 3 Report - Fixed-Data QLoRA Training and Evaluation Debugging
+Course: CSE465 - Pattern Recognition and Neural Networks
+Student: Tasbid Al Rahman | ID: 2232225642
+Date: May 2026
+
+========================================
+1. PROJECT CONTEXT
+========================================
+
+The Empathetic Full-Duplex Speech Language Model (EFSM) project fine-tunes the
+Thinker/language backbone of Qwen2.5-style models for empathetic therapeutic
+conversation. Because loading the full Qwen2.5-Omni model for training was too
+heavy for free GPU environments, the practical training target was changed to
+Qwen/Qwen2.5-7B-Instruct, which is treated as the text Thinker-equivalent.
+
+The fine-tuning method is QLoRA:
+- Base model: Qwen/Qwen2.5-7B-Instruct
+- Adapter repo: tasbid001/efsm-checkpoints-fixed
+- Dataset: facebook/empathetic_dialogues
+- Training objective: assistant-response-only supervised fine-tuning
+- Hardware: Kaggle/Colab free GPU sessions
+
+========================================
+2. INITIAL TRAINING RESULT AND THE MAJOR ISSUE FOUND
+========================================
+
+The first long training run reached checkpoint-2200 and showed extremely tiny
+training/evaluation losses:
+- train loss around 1e-5
+- eval loss around 4e-5
+
+At first glance this looked like either excellent convergence or overfitting.
+After investigation, it was found to be worse than normal overfitting: the
+processed dataset itself was wrong.
+
+Root cause:
+src/data/preprocess_empathetic.py was using:
+  row["prompt"]
+as the dialogue turn text.
+
+In EmpatheticDialogues, "prompt" is the situation/context prompt, not the actual
+conversation utterance. The actual spoken dialogue turn is:
+  row["utterance"]
+
+As a result, many user and assistant messages became exact copies of the same
+prompt. The model was not learning empathy; it was learning an artificially easy
+copy-style task. This explained the near-zero loss. It was not a trustworthy
+fine-tuned model.
+
+Evidence:
+The old preprocessing notebook showed examples like:
+  USER:      [emotion: embarrassed] I can't believe I actually went to work...
+  ASSISTANT: I can't believe I actually went to work...
+
+This invalidated checkpoint-2200 and all earlier checkpoints trained on the
+broken JSONL files.
+
+========================================
+3. FIXES APPLIED TO DATA PREPROCESSING
+========================================
+
+The preprocessing script was fixed:
+- Changed dialogue text source from row["prompt"] to row["utterance"]
+- Added cleanup for EmpatheticDialogues placeholders such as "_comma_"
+- Added a leakage validation check to fail fast if too many assistant turns
+  exactly copy the previous user turn
+
+New validator added:
+  src/data/validate_jsonl.py
+
+This script checks train/val/test JSONL files and reports:
+- number of conversations
+- number of assistant turns
+- empty turns
+- exact user-copy rate
+
+After regenerating JSONL files, the validation results were:
+- train exact user copies: 11 / 29278 = 0.04%
+- val exact user copies: 0 / 3670 = 0.00%
+- test exact user copies: 1 / 3681 = 0.03%
+
+These values are acceptable because tiny exact-copy rates can naturally occur in
+dialogue. The major copy-target bug was fixed.
+
+New HuggingFace repo created for clean fixed-data run:
+  tasbid001/efsm-checkpoints-fixed
+
+Old checkpoints were not used.
+
+========================================
+4. FIXED-DATA TRAINING RUN
+========================================
+
+The first corrected training was run for one epoch because the original project
+deadline was very close.
+
+Training configuration:
+- num_train_epochs: 1
+- run_name: efsm-qlora-run2-fixed-data-1epoch
+- steps completed: 889 / 889
+
+Result:
+- checkpoint-889 uploaded to HuggingFace
+- final-adapter uploaded to HuggingFace
+- eval loss improved from about 2.02 at step 100 to about 1.956 at step 800
+
+Interpretation:
+The fixed-data training behaved realistically. Loss values were no longer
+artificially near zero. The decreasing eval loss showed that the model was
+learning from the corrected dataset, with no obvious overfitting after one
+epoch. However, qualitative evaluation showed the 1-epoch adapter was not yet
+strong enough to clearly outperform the base model.
+
+After the deadline was extended, the plan changed:
+- Continue training toward 3 total epochs
+- Resume from checkpoint-889
+- New run name: efsm-qlora-run2-fixed-data-3epoch
+
+The Kaggle training notebook was updated to:
+- download checkpoint-889 from HuggingFace if missing
+- resume with --resume_from_checkpoint checkpoints/checkpoint-889
+- keep num_train_epochs = 3
+
+If Kaggle interrupts mid-training, resume from the latest uploaded checkpoint
+folder, not from final-adapter. Example:
+  RESUME_CHECKPOINT = "checkpoint-1600"
+
+Update after continued training:
+The resumed 3-epoch training run completed successfully. During the continuation,
+Kaggle interrupted once after checkpoint-2300 was uploaded, so the run was later
+resumed from checkpoint-2300 and finished the remaining steps. The full fixed-data
+training target is now complete.
+
+Final training status:
+- Total target: 3 epochs
+- Resume path used: checkpoint-889, then checkpoint-2300 after interruption
+- Final completed checkpoint/final adapter: checkpoint-2667
+- Final adapter uploaded to: tasbid001/efsm-checkpoints-fixed
+- Checkpoints uploaded during continuation include checkpoint-2300 through
+  checkpoint-2667/final adapter after completion
+
+Observed training behavior:
+- train/loss continued decreasing overall through the resumed run
+- eval/loss reached its best/lowest region around approximately step 1700-1800
+  and then slightly increased later
+- the later eval-loss rise was small, suggesting mild plateau or possible early
+  overfitting, but not catastrophic instability
+
+Recommendation:
+Do not blindly assume checkpoint-2667/final adapter is the best qualitative model.
+Before final demo/report, compare:
+- checkpoint around 1700-1800
+- checkpoint-2300
+- checkpoint-2667/final adapter after 3 epochs
+using the quick Colab evaluation notebook. Pick the adapter/checkpoint with the
+best response quality, not only the latest one.
+
+========================================
+5. EVALUATION WORK AND CUDA MEMORY ISSUES
+========================================
+
+A quick evaluation script/notebook was created:
+- src/eval/quick_compare.py
+- notebooks/03_quick_evaluate.ipynb
+- notebooks/03_quick_evaluate_colab.ipynb
+
+Goal:
+Generate a side-by-side table:
+  prompt | base_response | fine_tuned_response
+
+Initial evaluation approach:
+- Load base model
+- Generate base responses
+- Unload base model
+- Load base model + LoRA adapter
+- Generate fine-tuned responses
+
+Problem:
+This repeatedly caused CUDA out-of-memory errors on Kaggle T4 GPUs.
+
+Observed behavior:
+- GPU 0 filled to around 14.5 GB
+- generation requested a small additional allocation
+- GPU 1 often stayed at 0% utilization
+- reducing prompt count and max_new_tokens did not fix the root issue
+
+PyTorch CUDA memory management was consulted. Allocator settings such as:
+  expandable_segments:True
+  max_split_size_mb:64
+  garbage_collection_threshold:0.8
+were added. These help fragmentation and allocator behavior, but the real issue
+was that the model/generation workload was too tightly packed onto one T4.
+
+Several fixes were attempted:
+- reduce max_new_tokens
+- reduce prompt limit
+- device_map="auto"
+- explicit two-GPU layer split
+- CPU offload for later layers
+
+The CPU-offload fallback avoided immediate OOM but was too slow/stalled in
+Kaggle for practical use.
+
+========================================
+6. FINAL EVALUATION IMPROVEMENT
+========================================
+
+The evaluation strategy was changed to a much more memory-efficient approach:
+load ONE PEFT model only:
+  base Qwen2.5-7B-Instruct + LoRA adapter
+
+Then:
+- generate base response with adapter temporarily disabled
+- generate fine-tuned response with adapter enabled
+
+This avoids loading two separate 7B models. The new mode is:
+  --compare-mode single_peft
+
+The Colab notebook uses:
+  --device-strategy single_gpu_4bit
+  --compare-mode single_peft
+
+This successfully ran in Colab and produced comparison output.
+
+Qualitative 1-epoch result:
+The base model often produced warmer and deeper therapeutic responses than the
+1-epoch fine-tuned adapter. The fine-tuned adapter was shorter and more
+dataset-like, likely because EmpatheticDialogues contains many short casual
+supporter replies.
+
+Conclusion:
+The 1-epoch model is a valid recovered checkpoint, but not the final target now
+that the deadline is extended. Continue training to 3 epochs and re-evaluate.
+
+========================================
+7. CURRENT STATE OF CODE AND NOTEBOOKS
+========================================
+
+Important commits pushed:
+- Fixed EmpatheticDialogues preprocessing leakage
+- Pointed training to tasbid001/efsm-checkpoints-fixed
+- Made preprocessing notebook robust on Kaggle
+- Hardened Kaggle training notebook
+- Limited fixed-data training to one epoch
+- Added quick evaluation notebook
+- Added Colab quick evaluation notebook
+- Added therapeutic prompt option
+- Updated training to resume from checkpoint-889 and continue to 3 epochs
+
+Important files:
+- configs/config.yaml
+- src/data/preprocess_empathetic.py
+- src/data/validate_jsonl.py
+- src/training/train.py
+- src/eval/quick_compare.py
+- notebooks/01_preprocess.ipynb
+- notebooks/02_training.ipynb
+- notebooks/03_quick_evaluate_colab.ipynb
+
+Current training status:
+- Fixed-data training is complete for 3 total epochs
+- Next task is evaluation and demo selection
+
+========================================
+8. NEXT STEPS
+========================================
+
+Immediate:
+1. Run notebooks/03_quick_evaluate_colab.ipynb.
+2. Compare base vs fine-tuned responses using single_peft mode.
+3. Evaluate at least checkpoint-2667/final adapter.
+4. If possible, also evaluate checkpoint around step 1700-1800 because eval/loss
+   appeared lowest there.
+5. Decide whether final-adapter or an earlier checkpoint has the best practical
+   response quality.
+6. Prepare training/evaluation report.
+
+Next project phase:
+Build a simple working speech UI:
+  microphone input -> ASR/transcript -> fine-tuned Qwen response -> TTS/audio output
+
+Recommended demo implementation:
+- Gradio frontend
+- microphone input
+- Whisper/faster-whisper or similar ASR
+- Qwen2.5-7B + LoRA adapter for response generation
+- simple TTS for audio reply
+
+This gives a practical speech-in/speech-out system for supervisor demonstration,
+even if the full Qwen2.5-Omni end-to-end speech pipeline remains a future
+integration step.

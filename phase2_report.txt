@@ -1,0 +1,263 @@
+EFSM Phase 2 Progress Report — QLoRA Fine-Tuning
+Course: CSE465 — Pattern Recognition and Neural Networks
+Student: Tasbid Al Rahman | ID: 2232225642
+Demo: 22 | April 2026
+
+========================================
+1. PROJECT RECAP
+========================================
+
+The Empathetic Full-Duplex Speech Language Model (EFSM) fine-tunes Qwen2.5-Omni-7B
+to produce empathetic therapeutic speech responses without a text bottleneck. The
+original EAVT pipeline (Whisper -> WavLM -> RoBERTa -> Fusion -> LLaMA -> StyleTTS2)
+discards paralinguistic information at every stage. EFSM replaces it with one unified
+model where audio flows directly into the Thinker and out through the Talker.
+
+Architecture:
+
+| Component                        | Role                            | Status in EFSM     |
+|----------------------------------|---------------------------------|--------------------|
+| Audio Encoder (Whisper-large-v3) | Raw audio -> audio tokens       | Frozen             |
+| Thinker (Qwen2.5-7B backbone)    | Audio tokens -> response text   | Fine-tuned (QLoRA) |
+| Talker (dual-track decoder)      | Text tokens -> speech tokens    | Frozen             |
+| Token2Wav (BigVGAN)              | Speech tokens -> waveform       | Frozen             |
+
+========================================
+2. PHASE 1 COMPLETION — MODEL VERIFICATION
+========================================
+
+| Metric                        | Result                                     |
+|-------------------------------|--------------------------------------------|
+| Total parameters              | 5.02 B                                     |
+| Trainable parameters (pre-LoRA)| 1098.26 M (21.90%)                        |
+| VRAM — GPU 0 (T4)             | 2.03 GB / 15.64 GB                         |
+| VRAM — GPU 1 (T4)             | 4.25 GB / 15.64 GB                         |
+| Text inference                | Empathetic response generated successfully |
+| Speech output (Talker)        | Deferred — resolved in Phase 3 via         |
+|                               | enable_audio_output=False                  |
+
+========================================
+3. PHASE 2 — DATASET PREPARATION
+========================================
+
+3.1 Dataset
+-----------
+EmpatheticDialogues (Facebook Research): ~25,000 multi-turn conversations, 32 emotion
+categories. Each conversation has a ground-truth emotion label, a seeker (user) and a
+supporter (assistant). Selected because it directly targets the therapeutic empathy
+objective.
+
+3.2 Preprocessing — preprocess_empathetic.py
+--------------------------------------------
+The raw dataset is a flat utterance table. Conversations are reconstructed by grouping
+on conv_id and sorting by utterance_idx. Speaker role is assigned deterministically:
+even utterance_idx = user (seeker), odd = assistant (supporter).
+
+Each conversation is formatted as a ChatML message list:
+
+  [system]    "You are an empathetic voice therapist..."
+  [user]      "[emotion: sadness] I just found out I didn't get the job..."
+  [assistant] "I'm so sorry to hear that..."
+
+The [emotion: X] tag is prepended to every user turn. This gives the Thinker an
+explicit emotional signal during text-mode training, approximating the paralinguistic
+information that audio tokens would carry in full inference.
+
+Split: 80/10/10 (train/val/test), stratified by emotion to preserve class distribution
+across splits. Output: data/train.jsonl, val.jsonl, test.jsonl — uploaded to
+tasbid001/efsm-checkpoints on HuggingFace Hub for cross-session persistence.
+
+3.3 Dataset Class — dataset.py
+-------------------------------
+EFSMDataset tokenises each conversation and applies label masking so that cross-entropy
+loss is computed only on assistant tokens. System and user tokens are masked with -100.
+
+Masking approach: for each assistant turn at position i, the prefix messages[:i] is
+rendered with add_generation_prompt=True to find the start token index, and
+messages[:i+1] with add_generation_prompt=False to find the end index. This correctly
+handles special tokens (<|im_start|>, <|im_end|>) and multi-turn conversations.
+
+Note: apply_chat_template(tokenize=False) + encode() is used instead of
+apply_chat_template(tokenize=True) because fast tokenizers return a tokenizers.Encoding
+object rather than a plain list, which breaks torch.tensor() construction.
+
+========================================
+4. PHASE 3 — QLoRA FINE-TUNING
+========================================
+
+4.1 Method
+----------
+Full fine-tuning of the 7B Thinker at fp16 requires ~56 GB VRAM (weights + Adam
+states). QLoRA reduces this via:
+- 4-bit NF4 quantisation: compresses base weights from 14 GB to ~3.5 GB
+- LoRA adapters: only ~13M parameters (0.19% of model) are trained
+
+LoRA Configuration:
+
+| Parameter       | Value                              | Rationale                              |
+|-----------------|------------------------------------|----------------------------------------|
+| Rank (r)        | 16                                 | Higher capacity for domain adaptation  |
+| Alpha           | 32                                 | Standard alpha = 2r rule               |
+| Target modules  | q_proj, k_proj, v_proj, o_proj     | All attention projections              |
+| Dropout         | 0.05                               | Light regularisation                   |
+| task_type       | Omitted                            | Avoids NotImplementedError on Omni     |
+|                 |                                    | multimodal class hierarchy             |
+
+Training Configuration:
+
+| Parameter                   | Value          |
+|-----------------------------|----------------|
+| Batch size                  | 1              |
+| Gradient accumulation steps | 16             |
+| Effective batch size        | 16             |
+| Learning rate               | 2e-4           |
+| LR scheduler                | Cosine + 100 warmup steps |
+| Epochs                      | 3              |
+| Max sequence length         | 512 tokens     |
+| Precision                   | fp16           |
+| Gradient checkpointing      | Enabled        |
+| Optimiser                   | AdamW 8-bit    |
+
+========================================
+5. ENGINEERING CHALLENGES AND RESOLUTIONS
+========================================
+
+5.1 Multi-GPU DataParallel — Kaggle T4x2
+-----------------------------------------
+HuggingFace Trainer auto-wraps in DataParallel when two GPUs are detected.
+BitsAndBytes 4-bit tensors cannot be copied across devices, causing cross-device errors.
+Multiple mitigations (is_parallelizable=False, device_map={"":0}, CUDA_VISIBLE_DEVICES,
+accelerate single-process config) were attempted on Kaggle without success because
+Kaggle initialises CUDA before user code runs.
+
+Resolution: Migrated to Google Colab Free Tier (single T4). Single-GPU environment
+never triggers DataParallel. CUDA_VISIBLE_DEVICES=0 set as first line of train.py as
+an additional safeguard.
+
+5.2 Full Omni Model Loading OOM
+---------------------------------
+Original approach loaded Qwen2_5OmniForConditionalGeneration, extracted model.thinker,
+and deleted the rest. During loading, GPU memory reached 14.29 GB at 60% of weight
+shards (806/1346). The Thinker in fp16 is exactly 14 GB (7B x 2 bytes), indicating
+that 4-bit quantisation was silently failing for the Omni model's multi-component
+architecture — the model was loading in fp16 rather than 4-bit.
+
+Resolution: Abandoned the Omni loader entirely. Qwen2.5-7B-Instruct is architecturally
+identical to the Thinker and loads cleanly in 4-bit (~3.5 GB) via AutoModelForCausalLM.
+For text-based empathy fine-tuning, language modelling capabilities are equivalent.
+qlora_setup.py was rewritten to use AutoModelForCausalLM + AutoTokenizer directly,
+removing the .thinker extraction and enable_audio_output=False workaround.
+
+5.3 BF16 Compute Dtype — Silent FP32 Fallback on T4
+-----------------------------------------------------
+With bnb_4bit_compute_dtype=bfloat16 and bf16=True, peak training VRAM was 14.31 GB.
+The T4 (Turing, CUDA CC 7.5) has FP16 tensor cores but no BF16 tensor cores (BF16
+hardware requires Ampere CC 8.0+). BitsAndBytes silently falls back to FP32 when BF16
+compute is requested on Turing, doubling activation memory from ~5 GB (fp16) to ~10 GB
+(fp32) and pushing total VRAM over the 14.56 GB ceiling.
+
+Resolution: bnb_4bit_compute_dtype changed to float16. TrainingArguments updated to
+fp16=True, bf16=False. max_seq_len reduced from 1024 to 512 for additional headroom
+(activation memory scales linearly with sequence length).
+
+Expected peak VRAM after fixes: ~7-8 GB (vs. 14.31 GB before).
+
+5.4 CPU-Only PyTorch on Colab
+------------------------------
+pip install -r requirements.txt (which listed torch>=2.1.0) overwrote Colab's
+pre-installed CUDA PyTorch with a CPU-only build from PyPI, causing:
+AssertionError: Torch not compiled with CUDA enabled.
+
+Resolution: torch, torchvision, torchaudio removed from requirements.txt. All
+subprocess calls to 'python' replaced with sys.executable to ensure the subprocess
+uses the same Python binary as the notebook kernel.
+
+5.5 Checkpoint Persistence Across Sessions
+-------------------------------------------
+Colab Free Tier sessions are limited to ~4 hours, insufficient to complete 3 epochs.
+The original train.py only uploaded to HF Hub after full training completion, meaning
+a disconnection would lose all local checkpoints.
+
+Resolution: A custom TrainerCallback (HubCheckpointCallback) was added that uploads
+each checkpoint directory to tasbid001/efsm-checkpoints on HuggingFace Hub immediately
+after every on_save event (every 100 steps). Cell 4 of the Colab notebook was updated
+to download the latest checkpoint from HF Hub at session start and pass
+--resume_from_checkpoint to train.py, enabling seamless resumption.
+
+========================================
+6. TRAINING RESULTS
+========================================
+
+Training compute: Google Colab Free Tier, single NVIDIA T4 (14.56 GB VRAM)
+Steps completed at Demo 2: ~450 of 3,187 total (~14% of full training)
+Checkpoints saved to HF Hub: checkpoint-200, checkpoint-300, checkpoint-400
+
+W&B Logged Metrics:
+
+| Metric          | Observation                                                    |
+|-----------------|----------------------------------------------------------------|
+| train/loss      | Started ~2.2, dropped to <0.5 within 50 steps, continued      |
+|                 | declining to ~0.1-0.2 by step 450                             |
+| train/grad_norm | Started ~4.5, stabilised below 0.2 after warmup — no          |
+|                 | exploding/vanishing gradients                                  |
+| train/lr        | Cosine schedule confirmed — warmup to 2e-4 then decay         |
+| eval/loss       | Decreased monotonically across evaluation steps (100-300),    |
+|                 | confirming generalisation to validation set                    |
+
+The rapid early loss drop is expected behaviour for LoRA fine-tuning on an
+instruction-tuned base: the model redirects existing capabilities toward the target
+domain rather than learning from scratch.
+
+========================================
+7. PROJECT PLAN STATUS
+========================================
+
+| Phase | Description              | Planned          | Status                          |
+|-------|--------------------------|------------------|---------------------------------|
+| 0     | Setup                    | Apr 11-12        | Complete                        |
+| 1     | Model verification       | Apr 12-13        | Complete                        |
+| 2     | Dataset preparation      | Apr 13-15        | Complete                        |
+| 3     | QLoRA fine-tuning        | Apr 15-20        | In progress — ~14% complete,    |
+|       |                          |                  | stable training, checkpoints    |
+|       |                          |                  | saved to HF Hub                 |
+| 4     | EPITOME evaluation       | Apr 20-23        | Not started                     |
+| 5     | Full-duplex Gradio demo  | Apr 23-25        | Not started                     |
+
+Phase 3 slippage is attributable to the four engineering failure modes in Section 5,
+each requiring diagnosis, a code fix, and a full re-run from scratch on Colab.
+
+========================================
+8. NEXT STEPS
+========================================
+
+Phase 3 Completion:
+- Resume training from checkpoint-400 in new Colab sessions
+- Auto-upload callback ensures checkpoint persistence going forward
+- Estimated 3-4 additional 4-hour sessions to complete 3 epochs
+- Final adapter (~130 MB) uploaded to HF Hub as final-adapter upon completion
+
+Phase 4 — EPITOME Evaluation:
+- Compare System A (base Qwen2.5-7B-Instruct) vs System B (+ fine-tuned LoRA)
+- Evaluate on test split (~2,500 conversations) using Claude API as EPITOME judge
+- Score Emotional Reaction, Interpretation, Exploration (each 0-2, total 0-6)
+- Run t-test on total scores; target: System B > System A by >= 0.3
+
+Phase 5 — Full-Duplex Gradio Demo:
+- Load full Qwen2.5-Omni-7B-Instruct and merge fine-tuned LoRA adapter
+- Gradio microphone streaming -> Audio Encoder -> Thinker (fine-tuned) -> Talker
+- Silero-VAD for interruption detection (full-duplex behaviour)
+- Note: adapter trained on Qwen2.5-7B-Instruct weights; merging into Omni Thinker
+  is architecturally valid as both share the same Qwen2.5-7B base architecture
+
+========================================
+9. SUMMARY
+========================================
+
+Demo 2 demonstrates a fully operational end-to-end QLoRA fine-tuning pipeline.
+EmpatheticDialogues is preprocessed into correctly masked ChatML training examples.
+Training is running stably on a single T4 with confirmed decreasing loss (train/loss
+~2.2 -> ~0.1 over 450 steps). Four engineering challenges were diagnosed and resolved:
+dual-GPU DataParallel incompatibility, Omni model loading exhausting VRAM, BF16 compute
+dtype falling back to FP32 on Turing GPUs, and pip overwriting Colab's CUDA PyTorch.
+The infrastructure is now stable, checkpoint-persistent, and resumable. Completion of
+full 3-epoch training and EPITOME evaluation are the immediate next milestones.
