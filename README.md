@@ -1,359 +1,190 @@
-# Empathetic Full-Duplex Speech Language Model (EFSM)
+# Empathetic Voice LLM Demo
 
 **CSE465 - Pattern Recognition and Neural Networks**  
 **Student:** Tasbid Al Rahman  
 **ID:** 2232225642
 
-EFSM is a neural network course project on empathetic speech conversation. The original research goal was to adapt a unified speech-to-speech model, Qwen2.5-Omni, for therapeutic empathetic dialogue. During implementation, full Omni fine-tuning was not feasible on free T4 GPU environments, so the final trained artifact fine-tunes the Qwen2.5 language "Thinker" equivalent:
+This project is a simple speech-based empathetic chatbot demo.
+
+The system takes speech or an uploaded audio file, understands the message, generates an empathetic reply, and speaks the reply back to the user.
 
 ```text
-Qwen/Qwen2.5-7B-Instruct + QLoRA adapter trained on EmpatheticDialogues
-```
-
-The final demo provides a practical speech-in/speech-out system:
-
-```text
-microphone audio -> Whisper ASR -> fine-tuned Qwen2.5-7B + LoRA -> TTS voice reply
-```
-
-The Gradio UI keeps session memory and supports app-level interruption, so the user can stop the current assistant turn and immediately speak again.
-
----
-
-## Final Demo Checkpoint
-
-| Item | Value |
-|---|---|
-| Base LLM | `Qwen/Qwen2.5-7B-Instruct` |
-| Fine-tuned adapter repo | `tasbid001/efsm-checkpoints-fixed` |
-| Default adapter subfolder | `checkpoint-2667` |
-| ASR model | `openai/whisper-tiny.en` by default in `demo/app.py` |
-| TTS | `edge-tts` by default, with `gTTS`, `espeak`, or `pyttsx3` fallback |
-| Demo UI | Gradio |
-
-If the Hugging Face adapter repository is private, a Hugging Face token with read access is required. Do not commit the token into GitHub. Set it as an environment variable named `HF_TOKEN`.
-
----
-
-## Repository Structure
-
-```text
-empathetic-voice-llm/
-├── configs/
-│   └── config.yaml
-├── demo/
-│   └── app.py                         # Final Gradio speech demo
-├── notebooks/
-│   ├── 00_verify_model.ipynb
-│   ├── 01_preprocess.ipynb
-│   ├── 02_training.ipynb
-│   ├── 02_training_colab.ipynb
-│   ├── 03_quick_evaluate.ipynb
-│   ├── 03_quick_evaluate_colab.ipynb
-│   ├── 04_kaggle_full_demo.ipynb       # Kaggle demo launcher
-│   └── 04_local_full_demo.ipynb        # Local PC demo launcher
-├── src/
-│   ├── data/
-│   │   ├── preprocess_empathetic.py
-│   │   ├── dataset.py
-│   │   └── validate_jsonl.py
-│   ├── eval/
-│   │   └── quick_compare.py
-│   ├── models/
-│   │   └── qlora_setup.py
-│   └── training/
-│       └── train.py
-├── phase1_report.txt
-├── phase2_report.txt
-├── phase_3report.txt
-├── EFSM_Project_Plan.md
-├── requirements.txt
-└── README.md
+Speech / audio file -> Speech recognition -> Empathetic LLM -> Voice response
 ```
 
 ---
 
-## Hardware Requirements
+## Recommended Demo: Kaggle Notebook
 
-For the real demo:
+This is the easiest way to run the full demo.
 
-- NVIDIA GPU strongly recommended
-- About 12-16 GB VRAM for 4-bit Qwen2.5-7B inference
-- CUDA-enabled PyTorch installed in the environment
-- Microphone and speakers
-- Internet access for first-time model/checkpoint download
-
-For UI-only testing:
-
-- No GPU required
-- Use mock mode:
-
-```bash
-python demo/app.py --mock
-```
-
-Mock mode proves that the Gradio interface works, but it does not load the trained model.
-
----
-
-## Setup
-
-Clone the repository:
-
-```bash
-git clone https://github.com/tasbidrahman10/empathetic-voice-llm.git
-cd empathetic-voice-llm
-```
-
-Create and activate a virtual environment.
-
-Windows PowerShell:
-
-```powershell
-python -m venv .venv
-.\.venv\Scripts\Activate.ps1
-python -m pip install --upgrade pip
-```
-
-Linux/macOS:
-
-```bash
-python -m venv .venv
-source .venv/bin/activate
-python -m pip install --upgrade pip
-```
-
-Install dependencies:
-
-```bash
-pip install -r requirements.txt
-```
-
-Important: `requirements.txt` intentionally does not install `torch`, because Kaggle/Colab usually provide CUDA-enabled PyTorch already. For local GPU use, install the correct CUDA PyTorch build from the official PyTorch instructions for the target machine.
-
-Example for CUDA 12.1:
-
-```bash
-pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
-```
-
----
-
-## Hugging Face Token
-
-If the adapter repo is private, set `HF_TOKEN` before running the real model.
-
-Windows PowerShell:
-
-```powershell
-$env:HF_TOKEN="paste_your_huggingface_token_here"
-```
-
-Linux/macOS:
-
-```bash
-export HF_TOKEN="paste_your_huggingface_token_here"
-```
-
-In Kaggle, add it as a notebook secret named:
-
-```text
-HF_TOKEN
-```
-
-Security note: never write a real token into `README.md`, notebooks, code files, or Git commits. If a token is accidentally shared, revoke it from Hugging Face settings and create a new one.
-
----
-
-## Run the Final Demo Locally
-
-First test the UI without loading the model:
-
-```bash
-python demo/app.py --mock
-```
-
-Open:
-
-```text
-http://127.0.0.1:7860
-```
-
-Then run the real demo:
-
-```bash
-python demo/app.py
-```
-
-Useful options:
-
-```bash
-python demo/app.py --share
-python demo/app.py --adapter-subfolder checkpoint-2667
-python demo/app.py --max-new-tokens 100
-python demo/app.py --tts-provider edge
-python demo/app.py --tts-provider gtts
-```
-
-If the current checkpoint is too heavy or an earlier checkpoint is requested:
-
-```bash
-python demo/app.py --adapter-subfolder checkpoint-1800 --max-new-tokens 100
-```
-
----
-
-## Run with Local Notebook
-
-Use this notebook if the evaluator wants to run the demo from a local Jupyter environment:
-
-```text
-notebooks/04_local_full_demo.ipynb
-```
-
-The notebook includes:
-
-- dependency installation
-- `HF_TOKEN` setup via secure prompt
-- CUDA/GPU check
-- mock UI launch
-- real Gradio demo launch
-
----
-
-## Run on Kaggle
-
-Use:
+Notebook:
 
 ```text
 notebooks/04_kaggle_full_demo.ipynb
 ```
 
-Kaggle settings:
+### Step 1: Open the Notebook in Kaggle
 
-1. Turn Internet on.
-2. Select GPU accelerator, preferably T4 x2.
-3. Add a Kaggle secret named `HF_TOKEN` if the adapter repo is private.
-4. Run the cells in order.
-5. For the real demo cell, open the public Gradio URL printed by Kaggle.
-
-The Kaggle notebook launches:
-
-```bash
-python demo/app.py --share
-```
-
----
-
-## Quick Evaluation
-
-To compare base vs fine-tuned text responses without loading two separate 7B models, use:
+1. Open Kaggle.
+2. Create a new notebook or import this repository.
+3. Open the notebook:
 
 ```text
-notebooks/03_quick_evaluate_colab.ipynb
+notebooks/04_kaggle_full_demo.ipynb
 ```
 
-or run directly on Windows PowerShell:
+### Step 2: Enable GPU and Internet
 
-```powershell
-python src/eval/quick_compare.py `
-  --config configs/config.yaml `
-  --output results/quick_eval_results.csv `
-  --limit 6 `
-  --max-new-tokens 80 `
-  --device-strategy single_gpu_4bit `
-  --compare-mode single_peft `
-  --system-prompt-style therapeutic
-```
+In the Kaggle notebook settings:
 
-On Linux/macOS, replace PowerShell backticks with `\`.
+1. Turn on **Internet**.
+2. Select **GPU** as the accelerator.
 
-This loads one PEFT model and generates:
+### Step 3: Add the Hugging Face Secret
 
-- base response with LoRA adapter disabled
-- fine-tuned response with LoRA adapter enabled
+The demo needs a Hugging Face token to load the model.
 
-The output is saved to:
+In Kaggle:
+
+1. Go to **Add-ons**.
+2. Open **Secrets**.
+3. Add a new secret named:
 
 ```text
-results/quick_eval_results.csv
+HF_TOKEN: paste_your_hugging_face_token_here
 ```
 
----
+4. Paste the Hugging Face token/key as the value.
+5. Enable the secret for the notebook.
 
-## Training Summary
-
-The final training target was the Qwen2.5-7B Thinker-equivalent rather than full Qwen2.5-Omni.
-
-| Setting | Value |
-|---|---|
-| Dataset | `facebook/empathetic_dialogues` |
-| Text field used after bug fix | `utterance` |
-| Fine-tuning method | QLoRA |
-| Quantization | 4-bit NF4 |
-| LoRA rank | 16 |
-| LoRA alpha | 32 |
-| Target modules | `q_proj`, `k_proj`, `v_proj`, `o_proj` |
-| Epochs | 3 |
-| Max sequence length | 512 |
-| Final checkpoint | `checkpoint-2667` |
-
-The preprocessing bug from the first long run was fixed before final training. The corrected preprocessing uses actual dialogue utterances and validates that assistant turns are not simply copied from user turns.
-
----
-
-## Reproduce Data Preparation
-
-```bash
-python src/data/preprocess_empathetic.py --config configs/config.yaml
-python src/data/validate_jsonl.py data/train.jsonl data/val.jsonl data/test.jsonl
-```
-
-This creates:
+The secret name must be exactly:
 
 ```text
-data/train.jsonl
-data/val.jsonl
-data/test.jsonl
+HF_TOKEN
 ```
 
-The `data/` directory is not meant to be committed.
+### Step 4: Run All Cells
 
----
+Run the notebook cells from top to bottom.
 
-## Reproduce Training
-
-Training was designed for a free single-T4 style environment and uploads checkpoints to Hugging Face when `HF_TOKEN` is available.
-
-```bash
-python src/training/train.py --config configs/config.yaml
-```
-
-To resume:
-
-```bash
-python src/training/train.py --config configs/config.yaml --resume_from_checkpoint checkpoints/checkpoint-889
-```
-
-Recommended notebook:
+The final cell will start the Gradio demo and show a public link like:
 
 ```text
-notebooks/02_training.ipynb
+https://xxxxx.gradio.live
+```
+
+Click the Gradio link.
+
+### Step 5: Load the Models
+
+After the Gradio page opens:
+
+1. Click **Load Models**.
+2. Wait until the models finish loading.
+
+This may take a few minutes.
+
+### Step 6: Use the Demo
+
+After the models are loaded, the professor can test the system in two ways:
+
+1. Speak using the microphone.
+2. Upload a `.wav` or `.mp3` audio file.
+
+After a few seconds, the system will reply with an empathetic spoken response.
+
+---
+
+## Sample Prompts to Try
+
+These can be spoken through the microphone or recorded/uploaded as audio.
+
+### Sad
+
+```text
+I have been feeling really low lately.
+It feels like nobody understands what I am going through.
+I try to stay strong, but some days feel too heavy.
+I just need someone to listen.
+```
+
+### Happy
+
+```text
+I had a really good day today.
+Something I worked hard for finally went well.
+I feel proud and excited, and I wanted to share it.
+It feels nice to have a moment like this.
+```
+
+### Angry
+
+```text
+I am really frustrated right now.
+I feel like my effort is not being respected.
+I tried to stay calm, but it keeps bothering me.
+I do not know how to let this go.
+```
+
+### Anxious
+
+```text
+I am worried about what might happen next.
+My mind keeps thinking about all the things that could go wrong.
+I know I should calm down, but it feels difficult.
+I just want to feel a little more in control.
 ```
 
 ---
 
-## Project Reports
+## Alternative Demo: Local Notebook
 
-The phase reports document the implementation path:
+If Kaggle is not used, the demo can also be opened from the local notebook.
 
-- `phase1_report.txt` - model verification
-- `phase2_report.txt` - dataset preparation and early QLoRA training issues
-- `phase_3report.txt` - fixed-data training, evaluation debugging, and final state
-- `EFSM_Project_Plan.md` - revised research plan
+Notebook:
+
+```text
+notebooks/04_local_full_demo.ipynb
+```
+
+Simple process:
+
+1. Open Jupyter Notebook or JupyterLab.
+2. Open:
+
+```text
+notebooks/04_local_full_demo.ipynb
+```
+
+3. Run the cells one by one.
+4. When the notebook asks for `HF_TOKEN`, paste the Hugging Face token/key.
+5. Open the Gradio link shown by the notebook.
+6. Click **Load Models**.
+7. Wait for the models to load.
+8. Speak using the microphone or upload a `.wav`/`.mp3` file.
+9. The system will reply with an empathetic voice response.
 
 ---
 
-## Notes for Evaluators
+## Notes
 
-The submitted demo is the practical working version of the EFSM idea. The original plan targeted direct Qwen2.5-Omni speech-to-speech fine-tuning, but free GPU constraints required training the Qwen2.5-7B language backbone instead. The final system still demonstrates the core project objective: an empathetic, fine-tuned neural conversation model accessible through a speech interface.
+- Kaggle is recommended because it provides GPU support.
+- The first model loading step can take several minutes.
+- Internet must be enabled in Kaggle.
+- If the Gradio link does not appear, run the final notebook cell again.
+- If the model does not load, check that the Kaggle secret is named exactly `HF_TOKEN`.
+
+---
+
+## Model Summary
+
+The demo uses:
+
+```text
+Whisper speech recognition
+Fine-tuned Qwen2.5-7B-Instruct language model
+Text-to-speech voice output
+```
+
+The main goal is to demonstrate an empathetic speech-to-speech conversation system.
