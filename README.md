@@ -45,6 +45,10 @@ In the Kaggle notebook settings:
 
 The demo needs a Hugging Face token to load the model.
 
+There are two safe options. Use **Option A** for Kaggle. Use **Option B** for a local notebook.
+
+### Option A: Kaggle Secret
+
 In Kaggle:
 
 1. Go to **Add-ons**.
@@ -52,7 +56,7 @@ In Kaggle:
 3. Add a new secret named:
 
 ```text
-HF_TOKEN: paste_your_hugging_face_token_here
+HF_TOKEN
 ```
 
 4. Paste the Hugging Face token/key as the value.
@@ -63,6 +67,28 @@ The secret name must be exactly:
 ```text
 HF_TOKEN
 ```
+
+### Option B: `.env` File
+
+If you do not want to put the token directly in GitHub, use the `.env` file.
+
+1. Open the file:
+
+```text
+.env
+```
+
+2. Put the Hugging Face token after `HF_TOKEN=`.
+
+Example:
+
+```text
+HF_TOKEN=paste_your_hugging_face_token_here
+```
+
+3. Save the file.
+
+The `.env` file is ignored by Git, so it will not be uploaded to GitHub.
 
 ### Step 4: Run All Cells
 
@@ -157,13 +183,15 @@ Simple process:
 notebooks/04_local_full_demo.ipynb
 ```
 
-3. Run the cells one by one.
-4. When the notebook asks for `HF_TOKEN`, paste the Hugging Face token/key.
-5. Open the Gradio link shown by the notebook.
-6. Click **Load Models**.
-7. Wait for the models to load.
-8. Speak using the microphone or upload a `.wav`/`.mp3` file.
-9. The system will reply with an empathetic voice response.
+3. Open the `.env` file in the project folder.
+4. Put the Hugging Face token after `HF_TOKEN=`.
+5. Save the `.env` file.
+6. Run the notebook cells one by one.
+7. Open the Gradio link shown by the notebook.
+8. Click **Load Models**.
+9. Wait for the models to load.
+10. Speak using the microphone or upload a `.wav`/`.mp3` file.
+11. The system will reply with an empathetic voice response.
 
 ---
 
@@ -174,6 +202,7 @@ notebooks/04_local_full_demo.ipynb
 - Internet must be enabled in Kaggle.
 - If the Gradio link does not appear, run the final notebook cell again.
 - If the model does not load, check that the Kaggle secret is named exactly `HF_TOKEN`.
+- Do not upload the real `.env` file to GitHub.
 
 ---
 

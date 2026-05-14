@@ -25,6 +25,14 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+try:
+    from dotenv import load_dotenv
+except ImportError:  # pragma: no cover - optional helper for local setup
+    load_dotenv = None
+
+if load_dotenv is not None:
+    load_dotenv()
+
 # Keep the demo on one GPU. 4-bit PEFT inference is more stable this way on T4.
 os.environ.setdefault("CUDA_VISIBLE_DEVICES", "0")
 
