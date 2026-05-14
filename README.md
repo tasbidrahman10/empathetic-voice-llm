@@ -41,17 +41,7 @@ In the Kaggle notebook settings:
 1. Turn on **Internet**.
 2. Select **GPU** as the accelerator.
 
-### Step 3: Add the Hugging Face Secret
-
-The required Hugging Face access is already prepared for the demo.
-
-In Kaggle:
-
-1. Open **Add-ons**.
-2. Open **Secrets**.
-3. Make sure the secret access is enabled for the notebook.
-
-### Step 4: Run All Cells
+### Step 3: Run All Cells
 
 Run the notebook cells from top to bottom.
 
@@ -63,7 +53,7 @@ https://xxxxx.gradio.live
 
 Click the Gradio link.
 
-### Step 5: Load the Models
+### Step 4: Load the Models
 
 After the Gradio page opens:
 
@@ -72,7 +62,7 @@ After the Gradio page opens:
 
 This may take a few minutes.
 
-### Step 6: Use the Demo
+### Step 5: Use the Demo
 
 After the models are loaded, the professor can test the system in two ways:
 
